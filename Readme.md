@@ -12,12 +12,19 @@ possible.
 ## Results
 
 On an AMD Ryzen AI 7 350 (8 cores, 16 threads, laptop class), one
-billion rows, file in page cache:
+billion rows, file in page cache. The chip thermal-throttles after a
+few sustained seconds, so honest numbers are cold single shots with
+cooldowns in between:
 
 | run | wall time |
 |-----|-----------|
-| best | 1.64s |
-| typical | 1.6s - 1.7s |
+| best (cold single shot, idle host) | 1.38s |
+| typical cold shot | 1.4s - 1.6s |
+| sustained repeats under load | ~1.6s - 1.9s |
+
+The official 1brc winners clock 1.5s on eight dedicated EPYC 7502P
+(Zen2) cores; their code remains a few percent more cycle-efficient,
+this machine's newer cores make up the difference.
 
 The design notes live as `Decision:` comments in
 [src/Aggregate.hs](src/Aggregate.hs). The short version: mmap the file,
