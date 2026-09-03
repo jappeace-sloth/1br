@@ -110,4 +110,5 @@ test-suite unit
       tasty-hunit,
       bytestring,
       directory,
+      primitive,
       1br

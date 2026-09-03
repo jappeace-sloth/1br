@@ -8,6 +8,8 @@
 module Generate
   ( main
   , generateFile
+  , loadStations
+  , Station (Station, stationPrefix, stationMeanTenths)
   ) where
 
 import Data.Bits (shiftR, xor)
@@ -77,13 +79,16 @@ parseStation line =
           })
     _ -> Left ("malformed stations line: " <> ByteStringChar8.unpack line)
 
--- | Means in the station list are @-?d?d.d@; reuse of the tenths trick
--- from the aggregator keeps everything integral.
+-- | Means in the station list are decimals like @26.0@ or @22.77@
+-- (Baghdad is the one two-decimal entry among the official 413); parse
+-- as a number and round to tenths. An earlier version stripped the dot
+-- and read the digits as tenths, which silently multiplied any
+-- two-decimal mean by ten and pinned that station at the clamp.
 parseMeanTenths :: ByteString -> Either String Int
 parseMeanTenths meanText =
-  case readMaybe (ByteStringChar8.unpack (ByteStringChar8.filter (/= '.') meanText)) of
+  case readMaybe (ByteStringChar8.unpack meanText) of
     Nothing -> Left ("malformed station mean: " <> ByteStringChar8.unpack meanText)
-    Just tenths -> Right tenths
+    Just mean -> Right (round ((mean :: Double) * 10))
 
 bufferSize :: Int
 bufferSize = 1024 * 1024
