@@ -38,8 +38,10 @@ import Data.ByteString.Lazy qualified as LazyByteString
 import Data.List (intersperse)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Primitive.ByteArray
+    (MutableByteArray (MutableByteArray), newAlignedPinnedByteArray)
 import Data.Primitive.PrimArray
-    (MutablePrimArray, newPrimArray, readPrimArray, setPrimArray,
+    (MutablePrimArray (MutablePrimArray), readPrimArray, setPrimArray,
     writePrimArray)
 import Data.Word (Word64, Word8)
 import Foreign.C.Types (CInt (..), CSize (..))
@@ -251,9 +253,16 @@ fieldsPerSlot = 8
 emptyOffset :: Int
 emptyOffset = -1
 
+-- | The alignment is not decoration: a slot is one cache line only if
+-- it starts on one. newPrimArray payloads begin 16 bytes into the heap
+-- block, which would make every slot straddle two lines and double the
+-- table's line traffic. Pinned is a side effect of requesting alignment
+-- and harmless at 4 MiB per worker.
 newTable :: IO WorkerTable
 newTable = do
-  slots <- newPrimArray (slotCount * fieldsPerSlot)
+  MutableByteArray raw <-
+    newAlignedPinnedByteArray (slotCount * fieldsPerSlot * 8) 64
+  let slots = MutablePrimArray raw
   setPrimArray slots 0 (slotCount * fieldsPerSlot) emptyOffset
   pure (WorkerTable {tableSlots = slots})
 
