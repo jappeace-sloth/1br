@@ -283,13 +283,15 @@ newTable = do
 -- slot, compare, update), so a lone cursor leaves the core
 -- latency-bound; independent chains overlap that. But every extra
 -- cursor also grows the loop's live state, and past two GHC runs out
--- of registers: the four-cursor version executed 212 instructions per
--- line (perf; a large share stack-spill traffic, 68 L1 loads per line
--- against ~10 algorithmic ones) versus 190 for two cursors and 183
--- for one, and its extra ILP never paid for the spills. Two cursors
--- with the mask table below measured lowest in cycles; one cursor
--- ties it on wall time but loses the overlap that hides table-load
--- latency on quiet machines.
+-- of registers: measured with perf on GHC 9.12 builds of this source
+-- BEFORE the mask-table change below, the four-cursor version
+-- executed 212 instructions per line (a large share stack-spill
+-- traffic, 68 L1 loads per line against ~10 algorithmic ones) versus
+-- 190 for two cursors and 183 for one, and the quad's extra ILP never
+-- paid for the spills. Two cursors combined with the mask table
+-- measured lowest in cycles and lands at ~171 instructions per line
+-- in the shipped build; one cursor ties it on wall time but loses the
+-- overlap that hides table-load latency on quiet machines.
 consumeLines :: Ptr Word8 -> WorkerTable -> Int -> Int -> IO ()
 consumeLines filePtr table rawStart rawEnd = do
   (start, end) <- alignRange filePtr (rawStart, rawEnd)
