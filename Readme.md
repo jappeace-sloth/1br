@@ -18,9 +18,9 @@ cooldowns in between:
 
 | run | wall time |
 |-----|-----------|
-| best (cold single shot, idle host) | 1.38s |
-| typical cold shot | 1.4s - 1.6s |
-| sustained repeats under load | ~1.6s - 1.9s |
+| best (cold single shot, idle host) | 1.27s |
+| typical cold shot | 1.27s - 1.31s |
+| sustained repeats under load | ~1.3s - 1.5s |
 
 The official 1brc winners clock 1.5s on eight dedicated EPYC 7502P
 (Zen2) cores; their code remains a few percent more cycle-efficient,
