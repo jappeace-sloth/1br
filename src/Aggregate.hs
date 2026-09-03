@@ -64,6 +64,11 @@ processFile path = do
   if dataSize == 0
     then pure "{}\n"
     else do
+      -- Parser invariant, not pedantry: chunk alignment scans forward
+      -- for the next newline and the tail loop trusts that one exists,
+      -- so a file without a final newline would walk past the end of
+      -- the data. The challenge guarantees newline-terminated rows;
+      -- anything else is malformed input and fails loudly here.
       lastByte <- peekByteAt filePtr (dataSize - 1)
       when (lastByte /= newlineByte) $
         die (path <> ": missing trailing newline, refusing to parse")
@@ -102,6 +107,10 @@ aggregateMapped filePtr dataSize = do
   free tailBuffer
   pure merged
 
+-- | Enough slack for work stealing without shrinking chunks to where
+-- per-chunk overhead (claiming, boundary alignment) shows up. Measured
+-- against 1 (static split, stragglers under host load) and 8 (no
+-- further gain) on the billion-row file.
 chunksPerWorker :: Int
 chunksPerWorker = 4
 
@@ -414,8 +423,11 @@ semicolonMatches word =
 
 -- | Zero every byte at position @byteIndex@ (0-based, little endian) and
 -- above, keeping only the bytes before the semicolon. Valid for
--- byteIndex 0 through 8 inclusive; the double shift stays branchless
--- where a single 64-bit shift would need the shift-by-64 special case.
+-- byteIndex 0 through 8 inclusive: each of the two shifts moves by
+-- @32 - 4*byteIndex@, i.e. between 0 and 32 bits, so both stay well
+-- inside unsafeShiftR's defined range (below 64) even at the
+-- endpoints, where a single 64-bit shift would need a branch for the
+-- shift-by-64 case (byteIndex 0 must produce an all-zero mask).
 maskBelowByte :: Int -> Word64 -> Word64
 {-# INLINE maskBelowByte #-}
 maskBelowByte byteIndex word =
