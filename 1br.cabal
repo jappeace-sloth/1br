@@ -1,12 +1,12 @@
 cabal-version:      3.0
 
-name:           template
+name:           1br
 version:        1.0.0
-homepage:       https://github.com/jappeace/template#readme
-bug-reports:    https://github.com/jappeace/template/issues
+homepage:       https://github.com/jappeace/1br#readme
+bug-reports:    https://github.com/jappeace/1br/issues
 author:         Jappie Klooster
 maintainer:     hi@jappie.me
-copyright:      2025 Jappie Klooster
+copyright:      2026 Jappie Klooster
 license:        MIT
 license-file:   LICENSE
 build-type:     Simple
@@ -18,10 +18,10 @@ extra-doc-files:
 
 source-repository head
   type: git
-  location: https://github.com/jappeace/template
+  location: https://github.com/jappeace/1br
 
 common common-options
-  default-extensions: 
+  default-extensions:
       EmptyCase
       FlexibleContexts
       FlexibleInstances
@@ -50,8 +50,7 @@ common common-options
     -Wcpp-undef -fwarn-tabs -Wpartial-fields
     -fdefer-diagnostics -Wunused-packages
     -fenable-th-splice-warnings
-    -fno-omit-yields
-    -threaded -rtsopts "-with-rtsopts=-N -M7G -T -Iw10"
+    -threaded -rtsopts "-with-rtsopts=-N -M7G -T"
 
   build-depends:
       base >=4.9.1.0 && <4.22.0
@@ -61,11 +60,23 @@ common common-options
 library
   import: common-options
   exposed-modules:
-      Template
+      Aggregate
+      Generate
   other-modules:
-      Paths_template
+      Paths_1br
   hs-source-dirs:
       src
+  -- Decision: -fomit-yields on the library (overriding the template's
+  -- -fno-omit-yields) because the per-line parse loop allocates nothing;
+  -- with -fno-omit-yields GHC inserts interruption checks into that loop,
+  -- which costs measurable throughput on a billion iterations. The
+  -- executables keep the template default since they only wrap the library.
+  ghc-options: -fomit-yields
+  build-depends:
+      bytestring,
+      containers,
+      mmap,
+      primitive
 
 executable exe
   import: common-options
@@ -73,7 +84,16 @@ executable exe
   hs-source-dirs:
       app
   build-depends:
-      template
+      1br
+  ghc-options: -Wno-unused-packages
+
+executable generate
+  import: common-options
+  main-is: GenerateMain.hs
+  hs-source-dirs:
+      gen
+  build-depends:
+      1br
   ghc-options: -Wno-unused-packages
 
 test-suite unit
@@ -82,11 +102,12 @@ test-suite unit
   main-is: Test.hs
   ghc-options: -Wno-unused-packages
   other-modules:
-      Paths_template
+      Paths_1br
   hs-source-dirs:
       test
   build-depends:
       tasty,
       tasty-hunit,
-      tasty-quickcheck,
-      template
+      bytestring,
+      directory,
+      1br

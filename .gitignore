@@ -3,9 +3,11 @@ network-uri-lenses.cabal
 .ghc.environment*
 dist*
 .#*
-result
+result*
 TAGS
 
 *.hi
 *.o
 .envrc
+/measurements*.txt
+/test-generated-measurements.txt

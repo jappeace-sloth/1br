@@ -1,7 +1,6 @@
-
 module Main where
 
-import qualified Template
+import Aggregate qualified
 
 main :: IO ()
-main = Template.main
+main = Aggregate.main

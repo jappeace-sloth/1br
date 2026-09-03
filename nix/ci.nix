@@ -9,10 +9,13 @@ let
   # safely use the wider tree here without thrashing the cabal cache.
   src = builtins.path {
     path = ../.;
-    name = "template-project-src";
+    name = "1br-src";
     filter = path: _type:
       let base = baseNameOf (toString path);
-      in !(builtins.elem base [ "dist-newstyle" "dist" "result" ".git" ]);
+      in !(builtins.elem base [ "dist-newstyle" "dist" "result" ".git" ])
+         # generated measurement files are gigabytes; hlint does not
+         # need them and copying them into the store would be absurd
+         && builtins.match "measurements.*[.]txt" base == null;
   };
 in
 {

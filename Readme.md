@@ -1,89 +1,65 @@
 [![https://jappieklooster.nl](https://img.shields.io/badge/blog-jappieklooster.nl-lightgrey)](https://jappieklooster.nl/tag/haskell.html)
-[![Github actions build status](https://img.shields.io/github/actions/workflow/status/jappeace/haskell-template-project/nix.yaml?branch=master)](https://github.com/jappeace/haskell-template-project/actions)
+[![Github actions build status](https://img.shields.io/github/actions/workflow/status/jappeace/1br/ci.yaml?branch=master)](https://github.com/jappeace/1br/actions)
 [![Jappiejappie](https://img.shields.io/badge/discord-jappiejappie-black?logo=discord)](https://discord.gg/Hp4agqy)
-[![Hackage version](https://img.shields.io/hackage/v/template.svg?label=Hackage)](https://hackage.haskell.org/package/template) 
 
-> The eye that looks ahead to the safe course is closed forever.
+> Speed is the essence of war.
 
-Haskell project template.
+The [one billion row challenge](https://github.com/gunnarmorling/1brc)
+in Haskell: aggregate the minimum, mean and maximum temperature per
+weather station out of a billion `name;temperature` lines, as fast as
+possible.
 
-Set up cabal within a nix shell.
-If you like nix this is a good way of doing haskell development.
+## Results
 
-similar to: https://github.com/monadfix/nix-cabal
-except this has a makefile and ghcid.
-We also make aggressive use of [pinning](https://wiki.nixos.org/wiki/FAQ/Pinning_Nixpkgs)
-ensuring project builds for ever (theoretically).
+On an AMD Ryzen AI 7 350 (8 cores, 16 threads, laptop class), one
+billion rows, file in page cache:
 
-Comes with:
-+ [GHCID](https://jappieklooster.nl/ghcid-for-multi-package-projects.html)
-+ a nix shell, meaning somewhat platform independence.
-  + which is pinned by default
-+ A couple of handy make commands.
-+ Starting haskell files, assuming we put practically all code in library
-+ Working test suite.
-+ functioining CI (pick your favorite or keep both)
-  + for various platforms with cabal
+| run | wall time |
+|-----|-----------|
+| best | 1.64s |
+| typical | 1.6s - 1.7s |
+
+The design notes live as `Decision:` comments in
+[src/Aggregate.hs](src/Aggregate.hs). The short version: mmap the file,
+fan chunks out to one worker per capability over a work-stealing
+counter, and per worker run four interleaved line cursors through a
+branchless SWAR parser (semicolon search, temperature parse and name
+masking all happen in 64-bit words) into an open-addressing hash table
+of unboxed Ints whose slots are exactly one cache line. The hot loop
+allocates nothing; correctness of the parser edge cases (page-boundary
+overreads) is handled by re-running the file tail through a padded
+private copy.
 
 ## Usage
 
-### Modifying for your project
-Assuming the name of your new project is `new-project`.
+Enter the nix shell and build:
 
-```
-git clone git@github.com:jappeace/haskell-template-project.git new-project
-cd new-project
-```
-
-+ [ ] Edit template.cabal,
-    + [ ] find and replace template with `new-project`
-    + [ ] Update copyright
-    + [ ] Update github
-+ [ ] rename template.cabal to new-project.cabal
-+ [ ] Edit Changelog.md
-  + [ ] replace template with `new-project`
-  + [ ] Also describe your version 1.0.0 release.
-+ [x] Edit default.nix and shell.nix, replace template with `new-project`.
-+ [ ] Edit copyright in LICENSE
-+ [ ] For automatic bound bumping: In “Settings” → “Actions” → “General” → “Workflow permissions” tick “Allow GitHub Actions to create and approve pull requests”
-
-#### Reconfigure remotes
-```
-git remote add template git@github.com:jappeace/haskell-template-project.git
-git remote set-url origin git@github.com:YOUR-ORG-OR-USER-NAME/new-project.git
-```
-
-We can get template updates like this if we want to by doing `git pull template`.
-There will be a large amount of conflicts, but the merge commit should solve them permanently.
-
-#### Readme
-
-+ [ ] Select desired badges. 
-  + [ ] Point build badges to right project
-+ [ ] Give short project description.
-+ [ ] Add new quote suited for the project.
-  For example for [fakedata-quickcheck](https://github.com/fakedata-haskell/fakedata-quickcheck#readme)
-  I used Kant because
-  he dealt with the question "what is truth" a lot.
-+ [ ] Truncate this checklist
-+ [ ] Truncate motivation for using  this template
-
-### Tools
-Enter the nix shell.
 ```
 nix-shell
-```
-You can checkout the makefile to see what's available:
-```
-cat makefile
+cabal build all
 ```
 
-### Running
+Generate a measurements file (413 official stations, fixed seed):
+
 ```
-make run
+cabal run generate -- 1000000000 measurements.txt
 ```
 
-### Fast filewatch which runs tests
+Aggregate it:
+
 ```
-make ghcid
+cabal run exe -- measurements.txt
 ```
+
+`exe` defaults to `./measurements.txt` when no path is given.
+
+## Tests
+
+```
+cabal test
+```
+
+The suite runs every sample pair shipped with the upstream 1brc
+repository (rounding, boundaries, multi-byte UTF-8 names, the 10 000
+unique key stress case) against the real pipeline, plus a
+generator/aggregator round trip.

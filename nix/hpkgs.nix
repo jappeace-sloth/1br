@@ -11,9 +11,11 @@ let
     root = ../.;
     fileset = pkgs.lib.fileset.unions [
       ../app
+      ../gen
       ../src
       ../test
-      ../template.cabal
+      ../data
+      ../1br.cabal
       ../LICENSE
       ../Readme.md
       ../Changelog.md
@@ -25,6 +27,6 @@ in
 # this allows you to create multiple compiler targets via nix.
 pkgs.haskellPackages.override {
   overrides = hnew: hold: {
-    template-project = hnew.callCabal2nix "template-project" src { };
+    "1br" = hnew.callCabal2nix "1br" src { };
   };
 }
