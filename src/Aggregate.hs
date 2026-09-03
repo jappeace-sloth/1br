@@ -10,6 +10,15 @@
 -- of magnitude too slow for the 1.5s target), conduit\/streaming (same
 -- problem), a shared concurrent table (contention, needs atomics). Private
 -- tables merge in microseconds because there are at most 10 000 stations.
+--
+-- Decision: numeric conversions in this module use fromIntegral, not
+-- the unwitch library. Every conversion is either a widening (Word8 to
+-- Int, digit arithmetic) or an intentional bit-preserving
+-- reinterpretation (hash bits to a slot index, the first 16 name bytes
+-- stored verbatim in Int slot fields), all in the per-line hot path of
+-- a benchmark whose whole point is the hot path; routing them through a
+-- conversion library makes none of them safer and puts a dependency
+-- between the reader and the bit manipulation.
 module Aggregate
   ( main
   , processFile

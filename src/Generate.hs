@@ -36,6 +36,12 @@ main = do
         Just rowCount -> generateFile rowCount path
     _ -> die "usage: generate <row-count> <output-path>"
 
+-- Decision: numeric conversions in this module use fromIntegral, not
+-- the unwitch library. All of them are total in context (Word64 values
+-- already reduced below the station count or below 1024, digits 0-9 to
+-- Word8) and the generator deliberately shares the aggregator's
+-- minimal dependency footprint.
+
 -- | One station to draw measurements for: the rendered @Name;@ prefix and
 -- its mean temperature in tenths.
 data Station = Station
@@ -54,27 +60,30 @@ generateFile rowCount path = do
 loadStations :: FilePath -> IO (SmallArray Station)
 loadStations path = do
   content <- ByteStringChar8.readFile path
-  let entries = fmap parseStation (ByteStringChar8.lines content)
-  if null entries
-    then die (path <> ": no stations found")
-    else pure (smallArrayFromList entries)
+  case traverse parseStation (ByteStringChar8.lines content) of
+    Left parseError -> die (path <> ": " <> parseError)
+    Right [] -> die (path <> ": no stations found")
+    Right entries -> pure (smallArrayFromList entries)
 
-parseStation :: ByteString -> Station
+parseStation :: ByteString -> Either String Station
 parseStation line =
   case ByteStringChar8.split ';' line of
-    [name, meanText] -> Station
-      { stationPrefix = ByteStringChar8.snoc name ';'
-      , stationMeanTenths = parseMeanTenths meanText
-      }
-    _ -> error ("malformed stations line: " <> ByteStringChar8.unpack line)
+    [name, meanText] ->
+      case parseMeanTenths meanText of
+        Left meanError -> Left meanError
+        Right tenths -> Right (Station
+          { stationPrefix = ByteStringChar8.snoc name ';'
+          , stationMeanTenths = tenths
+          })
+    _ -> Left ("malformed stations line: " <> ByteStringChar8.unpack line)
 
 -- | Means in the station list are @-?d?d.d@; reuse of the tenths trick
 -- from the aggregator keeps everything integral.
-parseMeanTenths :: ByteString -> Int
+parseMeanTenths :: ByteString -> Either String Int
 parseMeanTenths meanText =
   case readMaybe (ByteStringChar8.unpack (ByteStringChar8.filter (/= '.') meanText)) of
-    Nothing -> error ("malformed station mean: " <> ByteStringChar8.unpack meanText)
-    Just tenths -> tenths
+    Nothing -> Left ("malformed station mean: " <> ByteStringChar8.unpack meanText)
+    Just tenths -> Right tenths
 
 bufferSize :: Int
 bufferSize = 1024 * 1024
