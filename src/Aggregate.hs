@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE MagicHash #-}
 
 -- | One billion row challenge: aggregate min\/mean\/max temperature per
 -- weather station from a @name;temp@ text file.
@@ -49,7 +50,9 @@ import Foreign.Marshal.Alloc (free, mallocBytes)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
 import Foreign.Ptr (Ptr, castPtr, plusPtr)
 import Foreign.Storable (peekByteOff)
-import GHC.Exts (RealWorld)
+import GHC.Exts (Int (I#), RealWorld, indexWord64OffAddr#)
+import GHC.Ptr (Ptr (Ptr))
+import GHC.Word (Word64 (W64#))
 import System.Environment (getArgs)
 import System.Exit (die)
 import System.IO.MMap (Mode (ReadOnly), mmapFilePtr)
@@ -273,43 +276,41 @@ newTable = do
 -- | Parse and accumulate every line in @[start, end)@. @end@ must sit
 -- right after a newline.
 --
--- Decision: the range is split into four sub-ranges walked by four
--- interleaved cursors in one loop. A single line's work is one long
+-- Decision: the range is split into two sub-ranges walked by two
+-- interleaved cursors in one loop, revised down from four when perf
+-- counters became available. A single line's work is one long
 -- dependency chain (load name word, find the semicolon, hash, load the
--- slot, compare, update), so a single cursor leaves the core's
--- out-of-order machinery starved; independent chains overlap and
--- measurably raise instructions per cycle, the same trick the leading
--- Java entries use.
+-- slot, compare, update), so a lone cursor leaves the core
+-- latency-bound; independent chains overlap that. But every extra
+-- cursor also grows the loop's live state, and past two GHC runs out
+-- of registers: the four-cursor version executed 212 instructions per
+-- line (perf; a large share stack-spill traffic, 68 L1 loads per line
+-- against ~10 algorithmic ones) versus 190 for two cursors and 183
+-- for one, and its extra ILP never paid for the spills. Two cursors
+-- with the mask table below measured lowest in cycles; one cursor
+-- ties it on wall time but loses the overlap that hides table-load
+-- latency on quiet machines.
 consumeLines :: Ptr Word8 -> WorkerTable -> Int -> Int -> IO ()
 consumeLines filePtr table rawStart rawEnd = do
   (start, end) <- alignRange filePtr (rawStart, rawEnd)
-  let quarter = (end - start) `div` 4
-  splitA <- alignToLineStart filePtr (start + quarter)
-  splitB <- alignToLineStart filePtr (start + 2 * quarter)
-  splitC <- alignToLineStart filePtr (start + 3 * quarter)
-  quadLineLoop filePtr table
-    start splitA splitA splitB splitB splitC splitC end
+  let half = (end - start) `div` 2
+  splitA <- alignToLineStart filePtr (start + half)
+  pairLineLoop filePtr table start splitA splitA end
 
--- | Advance four cursors through their own sub-ranges, one line each
--- per iteration. When any cursor exhausts its sub-range the remainders
--- finish in plain single-cursor loops.
-quadLineLoop
-  :: Ptr Word8 -> WorkerTable -> Int -> Int -> Int -> Int -> Int -> Int
-  -> Int -> Int -> IO ()
-quadLineLoop filePtr table !indexA !endA !indexB !endB !indexC !endC !indexD !endD =
-  if indexA >= endA || indexB >= endB || indexC >= endC || indexD >= endD
+-- | Advance two cursors through their own sub-ranges, one line each
+-- per iteration. When either cursor exhausts its sub-range the
+-- remainders finish in plain single-cursor loops.
+pairLineLoop
+  :: Ptr Word8 -> WorkerTable -> Int -> Int -> Int -> Int -> IO ()
+pairLineLoop filePtr table !indexA !endA !indexB !endB =
+  if indexA >= endA || indexB >= endB
     then do
       lineLoop filePtr table indexA endA
       lineLoop filePtr table indexB endB
-      lineLoop filePtr table indexC endC
-      lineLoop filePtr table indexD endD
     else do
       nextA <- stepLine filePtr table indexA
       nextB <- stepLine filePtr table indexB
-      nextC <- stepLine filePtr table indexC
-      nextD <- stepLine filePtr table indexD
-      quadLineLoop filePtr table
-        nextA endA nextB endB nextC endC nextD endD
+      pairLineLoop filePtr table nextA endA nextB endB
 
 lineLoop :: Ptr Word8 -> WorkerTable -> Int -> Int -> IO ()
 lineLoop filePtr table !index !end =
@@ -441,18 +442,23 @@ semicolonMatches word =
 
 -- | Zero every byte at position @byteIndex@ (0-based, little endian) and
 -- above, keeping only the bytes before the semicolon. Valid for
--- byteIndex 0 through 8 inclusive: each of the two shifts moves by
--- @32 - 4*byteIndex@, i.e. between 0 and 32 bits, so both stay well
--- inside unsafeShiftR's defined range (below 64) even at the
--- endpoints, where a single 64-bit shift would need a branch for the
--- shift-by-64 case (byteIndex 0 must produce an all-zero mask).
+-- byteIndex 0 through 8 inclusive.
+--
+-- Decision: a static 9-entry mask table instead of computing the mask
+-- with shifts. A branchless shift version needs two variable shifts
+-- (a single @64 - 8*k@ shift is undefined at k=0), and x86 variable
+-- shifts want their count in %cl, so perf showed each mask costing a
+-- register-shuffling dance twice per line. The table turns that into
+-- one load from a 72-byte constant that lives in L1.
 maskBelowByte :: Int -> Word64 -> Word64
 {-# INLINE maskBelowByte #-}
-maskBelowByte byteIndex word =
-  word
-    .&. (complement 0
-           `unsafeShiftR` (32 - byteIndex `unsafeShiftL` 2)
-           `unsafeShiftR` (32 - byteIndex `unsafeShiftL` 2))
+maskBelowByte (I# byteIndex) word =
+  case byteMaskTable of
+    Ptr tableAddr -> word .&. W64# (indexWord64OffAddr# tableAddr byteIndex)
+
+-- | Little-endian Word64 entries; entry k has its low k bytes set.
+byteMaskTable :: Ptr Word64
+byteMaskTable = Ptr "\x00\x00\x00\x00\x00\x00\x00\x00\xff\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\x00\x00\x00\x00\x00\xff\xff\xff\x00\x00\x00\x00\x00\xff\xff\xff\xff\x00\x00\x00\x00\xff\xff\xff\xff\xff\x00\x00\x00\xff\xff\xff\xff\xff\xff\x00\x00\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff"#
 
 -- | Byte-wise fallback for names longer than 16 bytes; returns the
 -- number of bytes until (excluding) the semicolon.

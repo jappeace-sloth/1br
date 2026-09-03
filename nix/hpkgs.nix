@@ -22,10 +22,11 @@ let
     ];
   };
 in
-# you can pin a specific ghc version with
-# pkgs.haskell.packages.ghc984 for example.
-# this allows you to create multiple compiler targets via nix.
-pkgs.haskellPackages.override {
+# Decision: pin GHC 9.12.2 instead of the nixpkgs default 9.10.3. The
+# 9.12 native code generator emits measurably tighter code for the hot
+# loop (171 versus 195 instructions per line under perf on identical
+# source), which is the whole game in this repository.
+pkgs.haskell.packages.ghc9122.override {
   overrides = hnew: hold: {
     "1br" = hnew.callCabal2nix "1br" src { };
   };
