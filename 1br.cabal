@@ -75,7 +75,6 @@ library
   build-depends:
       bytestring,
       containers,
-      mmap,
       primitive
 
 executable exe

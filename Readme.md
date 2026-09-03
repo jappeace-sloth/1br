@@ -27,15 +27,16 @@ The official 1brc winners clock 1.5s on eight dedicated EPYC 7502P
 this machine's newer cores make up the difference.
 
 The design notes live as `Decision:` comments in
-[src/Aggregate.hs](src/Aggregate.hs). The short version: mmap the file,
-fan chunks out to one worker per capability over a work-stealing
-counter, and per worker run four interleaved line cursors through a
-branchless SWAR parser (semicolon search, temperature parse and name
-masking all happen in 64-bit words) into an open-addressing hash table
-of unboxed Ints whose slots are exactly one cache line. The hot loop
-allocates nothing; correctness of the parser edge cases (page-boundary
-overreads) is handled by re-running the file tail through a padded
-private copy.
+[src/Aggregate.hs](src/Aggregate.hs). The short version: workers pread
+chunks of the file into reusable padded buffers (plain reads beat mmap
+here: the kernel's copy from page cache parallelizes better than its
+page faults), claiming chunks off a work-stealing counter, and per
+worker run two interleaved line cursors through a branchless SWAR
+parser (semicolon search, temperature parse and name masking all
+happen in 64-bit words) into an open-addressing hash table of unboxed
+Ints whose slots are exactly one aligned cache line. Station names are
+copied to a per-worker arena on first sight so the reused buffers can
+be overwritten freely. The hot loop allocates nothing.
 
 ## Usage
 

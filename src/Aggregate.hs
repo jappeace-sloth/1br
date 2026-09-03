@@ -27,7 +27,7 @@ module Aggregate
 
 import Control.Concurrent (forkIO, getNumCapabilities)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Monad (foldM, forM, when)
+import Control.Monad (foldM, forM, forM_, when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Bits
     (complement, countTrailingZeros, shiftL, shiftR, unsafeShiftL,
@@ -42,10 +42,10 @@ import Data.Map.Strict qualified as Map
 import Data.Primitive.ByteArray
     (MutableByteArray (MutableByteArray), newAlignedPinnedByteArray)
 import Data.Primitive.PrimArray
-    (MutablePrimArray (MutablePrimArray), readPrimArray, setPrimArray,
-    writePrimArray)
+    (MutablePrimArray (MutablePrimArray), newPrimArray, readPrimArray,
+    setPrimArray, writePrimArray)
 import Data.Word (Word64, Word8)
-import Foreign.C.Types (CInt (..), CSize (..))
+import Foreign.C.Types (CInt (..), CLong (..), CSize (..))
 import Foreign.Marshal.Alloc (free, mallocBytes)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
 import Foreign.Ptr (Ptr, castPtr, plusPtr)
@@ -55,10 +55,19 @@ import GHC.Ptr (Ptr (Ptr))
 import GHC.Word (Word64 (W64#))
 import System.Environment (getArgs)
 import System.Exit (die)
-import System.IO.MMap (Mode (ReadOnly), mmapFilePtr)
+import Foreign.C.String (CString, withCString)
 
 foreign import ccall unsafe "string.h memcmp"
   c_memcmp :: Ptr Word8 -> Ptr Word8 -> CSize -> IO CInt
+
+foreign import ccall unsafe "open"
+  c_open :: CString -> CInt -> IO CInt
+
+foreign import ccall safe "pread"
+  c_pread :: CInt -> Ptr Word8 -> CSize -> CLong -> IO CLong
+
+foreign import ccall unsafe "lseek"
+  c_lseek :: CInt -> CLong -> CInt -> IO CLong
 
 main :: IO ()
 main = do
@@ -72,155 +81,142 @@ main = do
 -- e.g. @{Abha=-23.0\/18.0\/59.2, Adamstown=...}\\n@.
 processFile :: FilePath -> IO ByteString
 processFile path = do
-  (rawPtr, _rawSize, dataOffset, dataSize) <-
-    mmapFilePtr path ReadOnly Nothing
-  let filePtr = rawPtr `plusPtr` dataOffset
+  fileDescriptor <- withCString path (`c_open` 0)
+  when (fileDescriptor < 0) $ die (path <> ": cannot open")
+  dataSize64 <- c_lseek fileDescriptor 0 2
+  let dataSize = fromIntegral dataSize64 :: Int
   if dataSize == 0
     then pure "{}\n"
     else do
-      -- Parser invariant, not pedantry: chunk alignment scans forward
-      -- for the next newline and the tail loop trusts that one exists,
-      -- so a file without a final newline would walk past the end of
-      -- the data. The challenge guarantees newline-terminated rows;
-      -- anything else is malformed input and fails loudly here.
-      lastByte <- peekByteAt filePtr (dataSize - 1)
+      lastByte <- preadLastByte fileDescriptor dataSize
       when (lastByte /= newlineByte) $
         die (path <> ": missing trailing newline, refusing to parse")
-      perStation <- aggregateMapped filePtr dataSize
+      perStation <- aggregateFile fileDescriptor dataSize
       pure
         (LazyByteString.toStrict
           (Builder.toLazyByteString (formatReport perStation)))
 
--- | Aggregate a non-empty mapped file: fan the safe region out over all
--- capabilities and run the final bytes through a zero-padded copy.
+preadLastByte :: CInt -> Int -> IO Word8
+preadLastByte fileDescriptor dataSize = do
+  buffer <- mallocBytes 1
+  got <- c_pread fileDescriptor buffer 1 (fromIntegral (dataSize - 1))
+  when (got /= 1) $ die "cannot read final byte"
+  byte <- peekByteAt buffer 0
+  free buffer
+  pure byte
+
+-- | Aggregate a non-empty file by having workers pread it in chunks.
 --
--- Decision: workers pull chunks from a shared counter instead of getting
--- one fixed chunk each. With a static split one delayed core (the host
--- runs other work too) stretches the whole wall time; with
--- 'chunksPerWorker' times more chunks the fast cores absorb the
--- difference. The counter is a single atomic fetch-add per chunk, so
--- contention is immaterial.
-aggregateMapped :: Ptr Word8 -> Int -> IO (Map ByteString StationStats)
-aggregateMapped filePtr dataSize = do
-  mainEnd <- findMainEnd filePtr dataSize
+-- Decision: plain pread into per-worker reusable buffers instead of
+-- mmap. mmap costs a minor page fault per 4 KiB on first touch even
+-- when the file is fully in page cache (~0.85s of system time per
+-- billion-row run across the workers); pread copies from the page
+-- cache into an already-faulted buffer instead, trading that for a
+-- memcpy the kernel does at streaming speed. This also deletes the
+-- mmap tail-overread machinery: our own buffers carry padding, so the
+-- parser can always read 16 bytes ahead safely. The idea is borrowed
+-- from vshabanov's 1brc discourse entry, which hit the same mmap
+-- fault wall at high thread counts.
+--
+-- Workers pull chunks from a shared counter (one atomic fetch-add per
+-- chunk) so a delayed core cannot stretch the whole run; because
+-- stored names must outlive the reused read buffer, first sight of a
+-- station copies its name into a per-worker arena.
+aggregateFile :: CInt -> Int -> IO (Map ByteString StationStats)
+aggregateFile fileDescriptor dataSize = do
   workerCount <- getNumCapabilities
-  let ranges = chunkRanges mainEnd (workerCount * chunksPerWorker)
+  let chunkCount = workerCount * chunksPerWorker
   nextChunk <- newIORef 0
   resultVars <- forM [1 .. workerCount] $ \_workerIndex -> do
     resultVar <- newEmptyMVar
     _ <- forkIO $ do
+      -- +32 so the zero pad written after a full read stays in bounds
+      let bufferBytes = chunkLength dataSize chunkCount + 1 + chunkSlop + 32
+      buffer <- mallocBytes bufferBytes
       table <- newTable
-      workLoop filePtr table nextChunk ranges
+      readWorkLoop fileDescriptor dataSize chunkCount table buffer nextChunk
+      free buffer
       putMVar resultVar table
     pure resultVar
-  (tailBuffer, tailTable) <- processTail filePtr mainEnd dataSize
-  mainTables <- forM resultVars $ \resultVar -> do
-    table <- takeMVar resultVar
-    pure (filePtr, table)
-  merged <- mergeTables ((tailBuffer, tailTable) : mainTables)
-  free tailBuffer
+  tables <- forM resultVars takeMVar
+  merged <- mergeTables tables
+  forM_ tables (free . tableArena)
   pure merged
 
--- | Enough slack for work stealing without shrinking chunks to where
--- per-chunk overhead (claiming, boundary alignment) shows up. Measured
--- against 1 (static split, stragglers under host load) and 8 (no
--- further gain) on the billion-row file.
 chunksPerWorker :: Int
-chunksPerWorker = 4
+chunksPerWorker = 32
 
--- | Claim and process chunks until the shared counter runs off the end
--- of the range list.
-workLoop
-  :: Ptr Word8 -> WorkerTable -> IORef Int -> [(Int, Int)] -> IO ()
-workLoop filePtr table nextChunk ranges = do
+-- | Bytes of one chunk, rounding up so chunkCount chunks cover the file.
+chunkLength :: Int -> Int -> Int
+chunkLength dataSize chunkCount = (dataSize + chunkCount - 1) `div` chunkCount
+
+-- | Slack read beyond a chunk boundary: the final line starting inside
+-- the chunk may run up to a full line past it, and the parser reads up
+-- to 16 bytes ahead of a line start; rounded up generously.
+chunkSlop :: Int
+chunkSlop = 160
+
+-- | Claim and process chunks until the shared counter runs off the end.
+readWorkLoop
+  :: CInt -> Int -> Int -> WorkerTable -> Ptr Word8 -> IORef Int -> IO ()
+readWorkLoop fileDescriptor dataSize chunkCount table buffer nextChunk = do
   claimed <- atomicModifyIORef' nextChunk (\index -> (index + 1, index))
-  case drop claimed ranges of
-    [] -> pure ()
-    ((start, end) : _) -> do
-      consumeLines filePtr table start end
-      workLoop filePtr table nextChunk ranges
-
--- | End of the region that may be parsed straight from the mmap. The
--- parser reads up to 16 bytes ahead of a line start, so lines too close
--- to the end of the file must not be parsed in place: when the file size
--- is a multiple of the page size an overread past the last byte hits
--- unmapped memory and crashes. Everything from the returned offset on is
--- handled by 'processTail' via a padded copy instead. Returns 0 (whole
--- file is tail) when the file is small or contains no safely-parsable
--- prefix.
-findMainEnd :: Ptr Word8 -> Int -> IO Int
-findMainEnd filePtr dataSize =
-  if dataSize <= tailSlack
-    then pure 0
+  if claimed >= chunkCount
+    then pure ()
     else do
-      lastSafeNewline <- scanNewlineBackward filePtr (dataSize - tailSlack)
-      case lastSafeNewline of
-        Nothing -> pure 0
-        Just newlineIndex -> pure (newlineIndex + 1)
+      processChunk fileDescriptor dataSize chunkCount table buffer claimed
+      readWorkLoop fileDescriptor dataSize chunkCount table buffer nextChunk
 
--- | How many bytes before the end of the file we stop parsing in place.
--- Must exceed the parser's maximum overread (16 bytes) plus the longest
--- suffix a line can put after its name start reads (name word reads only
--- happen at indices below the line's semicolon, so 33 is comfortably
--- conservative).
-tailSlack :: Int
-tailSlack = 33
-
-scanNewlineBackward :: Ptr Word8 -> Int -> IO (Maybe Int)
-scanNewlineBackward filePtr index =
-  if index < 0
-    then pure Nothing
+-- | Read one chunk (plus one leading byte to find the first line start
+-- and slop for the trailing line) and parse every line that STARTS
+-- inside @[chunkStart, chunkEnd)@. Lines may end past chunkEnd inside
+-- the slop; the next chunk skips them because it only starts parsing
+-- at its own first line start.
+processChunk :: CInt -> Int -> Int -> WorkerTable -> Ptr Word8 -> Int -> IO ()
+processChunk fileDescriptor dataSize chunkCount table buffer claimed = do
+  let stride = chunkLength dataSize chunkCount
+  let chunkStart = claimed * stride
+  let chunkEnd = min dataSize (chunkStart + stride)
+  if chunkStart >= dataSize
+    then pure ()
     else do
-      byte <- peekByteAt filePtr index
+      let readStart = if chunkStart == 0 then 0 else chunkStart - 1
+      let wanted = min (dataSize - readStart) (chunkEnd - readStart + chunkSlop)
+      preadFully fileDescriptor buffer wanted readStart
+      -- zero the padding so overreads past EOF see no stray digits
+      fillBytes (buffer `plusPtr` wanted) 0 32
+      let boundary = chunkEnd - readStart
+      parseFrom <-
+        if chunkStart == 0
+          then pure 0
+          else scanPastNewline buffer wanted 0
+      pairLines buffer table parseFrom boundary
+
+-- | Buffer index just past the first newline at or after @index@,
+-- capped at @limit@ (a chunk with no newline yields the cap, which
+-- makes the callers parse nothing rather than walk into the padding).
+scanPastNewline :: Ptr Word8 -> Int -> Int -> IO Int
+scanPastNewline buffer limit index =
+  if index >= limit
+    then pure limit
+    else do
+      byte <- peekByteAt buffer index
       if byte == newlineByte
-        then pure (Just index)
-        else scanNewlineBackward filePtr (index - 1)
+        then pure (index + 1)
+        else scanPastNewline buffer limit (index + 1)
 
--- | Parse the file tail through a zero-padded private copy, so the
--- 16-byte-ahead reads land in our own buffer instead of past the mapping.
--- The returned table's name offsets point into that copy, hence the
--- buffer pointer is returned alongside and freed only after merging.
-processTail :: Ptr Word8 -> Int -> Int -> IO (Ptr Word8, WorkerTable)
-processTail filePtr mainEnd dataSize = do
-  let tailLength = dataSize - mainEnd
-  tailBuffer <- mallocBytes (tailLength + overreadPadding)
-  copyBytes tailBuffer (filePtr `plusPtr` mainEnd) tailLength
-  fillBytes (tailBuffer `plusPtr` tailLength) 0 overreadPadding
-  table <- newTable
-  consumeLines tailBuffer table 0 tailLength
-  pure (tailBuffer, table)
-
-overreadPadding :: Int
-overreadPadding = 32
-
--- | Split @[0, mainEnd)@ into roughly equal per-worker ranges, each
--- starting right after a newline so every worker sees whole lines.
-chunkRanges :: Int -> Int -> [(Int, Int)]
-chunkRanges mainEnd workerCount =
-  fmap
-    (\index ->
-      ( mainEnd * index `div` workerCount
-      , mainEnd * (index + 1) `div` workerCount))
-    [0 .. workerCount - 1]
-
--- The ranges above are raw byte splits; align them before use.
-alignRange :: Ptr Word8 -> (Int, Int) -> IO (Int, Int)
-alignRange filePtr (start, end) = do
-  alignedStart <- alignToLineStart filePtr start
-  alignedEnd <- alignToLineStart filePtr end
-  pure (alignedStart, alignedEnd)
-
--- | Move an arbitrary offset forward to the nearest line start (offset 0
--- already is one; anything else advances past the next newline).
-alignToLineStart :: Ptr Word8 -> Int -> IO Int
-alignToLineStart filePtr index =
-  if index == 0
-    then pure 0
+-- | pread until the requested byte count arrived (short reads happen).
+preadFully :: CInt -> Ptr Word8 -> Int -> Int -> IO ()
+preadFully fileDescriptor buffer wanted offset =
+  if wanted == 0
+    then pure ()
     else do
-      byte <- peekByteAt filePtr (index - 1)
-      if byte == newlineByte
-        then pure index
-        else alignToLineStart filePtr (index + 1)
+      got <-
+        c_pread fileDescriptor buffer (fromIntegral wanted)
+          (fromIntegral offset)
+      when (got <= 0) $ error "pread failed mid-file"
+      preadFully fileDescriptor (buffer `plusPtr` fromIntegral got)
+        (wanted - fromIntegral got) (offset + fromIntegral got)
 
 -- ---------------------------------------------------------------------------
 -- Per-worker hash table
@@ -240,8 +236,10 @@ alignToLineStart filePtr index =
 -- line per row). word0/word1 hold the first 16 name bytes (masked below
 -- the semicolon) and double as both hash input and fast equality check:
 -- names of at most 16 bytes never need a memcmp.
-newtype WorkerTable = WorkerTable
-  { tableSlots :: MutablePrimArray RealWorld Int
+data WorkerTable = WorkerTable
+  { tableSlots       :: !(MutablePrimArray RealWorld Int)
+  , tableArena       :: !(Ptr Word8)
+  , tableArenaCursor :: !(MutablePrimArray RealWorld Int)
   }
 
 slotCount :: Int
@@ -267,14 +265,27 @@ newTable = do
     newAlignedPinnedByteArray (slotCount * fieldsPerSlot * 8) 64
   let slots = MutablePrimArray raw
   setPrimArray slots 0 (slotCount * fieldsPerSlot) emptyOffset
-  pure (WorkerTable {tableSlots = slots})
+  arena <- mallocBytes arenaBytes
+  cursor <- newPrimArray 1
+  writePrimArray cursor 0 0
+  pure (WorkerTable
+    { tableSlots = slots
+    , tableArena = arena
+    , tableArenaCursor = cursor
+    })
+
+-- | Name storage that outlives the reused read buffer: the challenge
+-- caps stations at 10 000 of at most 100 bytes, doubled for headroom.
+arenaBytes :: Int
+arenaBytes = 2 * 1000 * 1000
 
 -- ---------------------------------------------------------------------------
 -- Hot loop
 -- ---------------------------------------------------------------------------
 
--- | Parse and accumulate every line in @[start, end)@. @end@ must sit
--- right after a newline.
+-- | Parse every line starting in @[parseFrom, boundary)@ of the chunk
+-- buffer; both cursors' final line may run past @boundary@ into the
+-- chunk's slop bytes, which is safe and by design.
 --
 -- Decision: the range is split into two sub-ranges walked by two
 -- interleaved cursors in one loop, revised down from four when perf
@@ -292,12 +303,14 @@ newTable = do
 -- measured lowest in cycles and lands at ~171 instructions per line
 -- in the shipped build; one cursor ties it on wall time but loses the
 -- overlap that hides table-load latency on quiet machines.
-consumeLines :: Ptr Word8 -> WorkerTable -> Int -> Int -> IO ()
-consumeLines filePtr table rawStart rawEnd = do
-  (start, end) <- alignRange filePtr (rawStart, rawEnd)
-  let half = (end - start) `div` 2
-  splitA <- alignToLineStart filePtr (start + half)
-  pairLineLoop filePtr table start splitA splitA end
+pairLines :: Ptr Word8 -> WorkerTable -> Int -> Int -> IO ()
+pairLines buffer table parseFrom boundary = do
+  let half = parseFrom + (boundary - parseFrom) `div` 2
+  split <-
+    if half >= boundary
+      then pure boundary
+      else scanPastNewline buffer boundary half
+  pairLineLoop buffer table parseFrom split split boundary
 
 -- | Advance two cursors through their own sub-ranges, one line each
 -- per iteration. When either cursor exhausts its sub-range the
@@ -506,7 +519,18 @@ recordMeasurement filePtr table !nameOffset !nameLength !word0 !word1 !slot !pro
   storedOffset <- readPrimArray slots slotBase
   if storedOffset == emptyOffset
     then do
-      writePrimArray slots slotBase nameOffset
+      -- first sight of this station: the chunk buffer it points into
+      -- will be overwritten, so copy the name into the arena and store
+      -- the arena offset instead
+      arenaOffset <- readPrimArray (tableArenaCursor table) 0
+      when (arenaOffset + nameLength > arenaBytes) $
+        error "station name arena full"
+      copyBytes
+        (tableArena table `plusPtr` arenaOffset)
+        (filePtr `plusPtr` nameOffset)
+        nameLength
+      writePrimArray (tableArenaCursor table) 0 (arenaOffset + nameLength)
+      writePrimArray slots slotBase arenaOffset
       writePrimArray slots (slotBase + 1) nameLength
       writePrimArray slots (slotBase + 2) (fromIntegral word0)
       writePrimArray slots (slotBase + 3) (fromIntegral word1)
@@ -525,7 +549,9 @@ recordMeasurement filePtr table !nameOffset !nameLength !word0 !word1 !slot !pro
           then
             if nameLength <= 16
               then pure True
-              else longNamesEqual filePtr storedOffset nameOffset nameLength
+              else
+                longNamesEqual (tableArena table) storedOffset filePtr
+                  nameOffset nameLength
           else pure False
       if matches
         then updateStats slots slotBase value
@@ -541,15 +567,15 @@ recordMeasurement filePtr table !nameOffset !nameLength !word0 !word1 !slot !pro
             (probes + 1)
             value
 
--- | Compare the bytes beyond the first 16 of two names living in the
--- same mapped region.
-longNamesEqual :: Ptr Word8 -> Int -> Int -> Int -> IO Bool
+-- | Compare the bytes beyond the first 16 of a stored (arena) name and
+-- a looked-up (chunk buffer) name.
+longNamesEqual :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO Bool
 {-# INLINE longNamesEqual #-}
-longNamesEqual filePtr offsetA offsetB nameLength = do
+longNamesEqual arenaPtr storedOffset bufferPtr nameOffset nameLength = do
   comparison <-
     c_memcmp
-      (filePtr `plusPtr` (offsetA + 16))
-      (filePtr `plusPtr` (offsetB + 16))
+      (arenaPtr `plusPtr` (storedOffset + 16))
+      (bufferPtr `plusPtr` (nameOffset + 16))
       (fromIntegral (nameLength - 16))
   pure (comparison == 0)
 
@@ -586,17 +612,16 @@ combineStats left right = StationStats
   }
 
 -- | Fold every worker table into one sorted map, copying station names
--- out of the regions they point into (each table carries its own base
--- pointer: the mmap for main workers, the padded copy for the tail).
-mergeTables :: [(Ptr Word8, WorkerTable)] -> IO (Map ByteString StationStats)
+-- out of the arenas they were stored in.
+mergeTables :: [WorkerTable] -> IO (Map ByteString StationStats)
 mergeTables = foldM mergeOneTable Map.empty
 
 mergeOneTable
   :: Map ByteString StationStats
-  -> (Ptr Word8, WorkerTable)
+  -> WorkerTable
   -> IO (Map ByteString StationStats)
-mergeOneTable startMap (basePtr, table) =
-  foldM (mergeSlot basePtr table) startMap [0 .. slotCount - 1]
+mergeOneTable startMap table =
+  foldM (mergeSlot (tableArena table) table) startMap [0 .. slotCount - 1]
 
 mergeSlot
   :: Ptr Word8
