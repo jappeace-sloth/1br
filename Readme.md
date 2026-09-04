@@ -24,7 +24,7 @@ poor thing thermal-throttles if you run it twice):
 | Haskell, mtl capability class | 18.5B, +3.8% | same as IO |
 | Haskell, effectful (dynamic dispatch) | 32.6B, +83% | 2.3x slower |
 | Rust, the control group ([rust/](rust/)) | 11.8B | **1.05s** |
-| Haskell in GHCi, object code -O0 | n/a | ~6 min extrapolated |
+| Haskell in GHCi, object code -O0 | n/a | ~7 min extrapolated |
 | Haskell in GHCi, true bytecode | n/a | ~2.1 hours extrapolated |
 | MicroHs ([mhs/](mhs/)) | bless its heart | ~10 hours |
 
@@ -65,8 +65,9 @@ so a naive `cabal repl` session runs native unoptimized code (about
 4s per 10M rows, ~30x slower than -O2, output byte-identical) while
 looking like an interpreter. Actual bytecode needs
 `-ignore-dot-ghci -fbyte-code -fforce-recomp` and costs about 76s
-per 10M rows: ~2500x slower than compiled, every register-resident
-micro-op become a boxed trip through a dispatch loop. GHCi is the
+per 10M rows, roughly 6000x the compiled binary's steady-state
+throughput (12.7ms per 10M): every register-resident micro-op
+becomes a boxed trip through a dispatch loop. GHCi is the
 interpreter half of a JIT with the profile-and-compile half missing,
 and that 2500x is the gap the missing half would have to close. Even
 so it beats MicroHs (362s per 10M, correct throughout) by about 5x,
