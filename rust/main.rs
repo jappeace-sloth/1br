@@ -89,7 +89,7 @@ unsafe fn read_u64(buffer: *const u8, index: usize) -> u64 {
 }
 
 /// SWAR: a byte of the result has its high bit set exactly where the
-/// input word holds a semicolon.
+/// input word holds a semicolon (0x3B, broadcast eight times below).
 #[inline(always)]
 fn semicolon_matches(word: u64) -> u64 {
     let masked = word ^ 0x3B3B3B3B3B3B3B3B;
@@ -110,14 +110,21 @@ fn start_slot(word0: u64, word1: u64) -> usize {
 /// return the next line's start. Mirrors stepLine/scanValue/finishLine.
 #[inline(always)]
 unsafe fn step_line(buffer: *const u8, table: &mut Table, index: usize) -> usize {
+    // Both name words load unconditionally and the semicolon position
+    // resolves arithmetically: whether a name is shorter or longer than
+    // eight bytes varies per station, so branching on it would
+    // mispredict constantly. byte_a/byte_b are the semicolon's byte
+    // position within each word, and because trailing_zeros of an
+    // empty match word is 64, they equal 8 exactly when that word has
+    // no semicolon, which the arithmetic below leans on.
     let word_a = read_u64(buffer, index);
     let word_b = read_u64(buffer, index + 8);
     let match_a = semicolon_matches(word_a);
     let match_b = semicolon_matches(word_b);
-    // trailing_zeros of 0 is 64, so byte_a/byte_b are 8 exactly when
-    // their word has no semicolon; the mask arithmetic exploits that.
     let byte_a = (match_a.trailing_zeros() >> 3) as usize;
     let byte_b = (match_b.trailing_zeros() >> 3) as usize;
+    // all-ones when word_a holds no semicolon, all-zeroes otherwise:
+    // a branch-free select for "does word_b's result count?"
     let missing_a = ((match_a != 0) as usize).wrapping_sub(1);
     let (name_length, word0, word1);
     if match_a | match_b == 0 {
@@ -130,19 +137,33 @@ unsafe fn step_line(buffer: *const u8, table: &mut Table, index: usize) -> usize
         word0 = word_a;
         word1 = word_b;
     } else {
+        // semicolon in word_a: length is byte_a, word1 masks to zero.
+        // semicolon only in word_b: byte_a is 8, so length is
+        // 8 + byte_b and word1 keeps byte_b bytes.
         name_length = byte_a + (byte_b & missing_a);
         word0 = word_a & BYTE_MASKS[byte_a];
         word1 = word_b & BYTE_MASKS[byte_b & missing_a];
     }
-    // branchless temperature parse (Quan Anh Mai's 1brc trick): the
-    // grammar is -?d?d.d, sign and dot position both come from bit 4
+    // Branchless temperature parse (Quan Anh Mai's 1brc trick). The
+    // grammar is exactly -?d?d.d, so within the 8 bytes loaded at the
+    // value: byte 0 is '-' or a digit, and the dot sits at byte 1, 2
+    // or 3. Bit 4 of every byte distinguishes them: it is 0 for '-'
+    // (0x2d) and '.' (0x2e) but 1 for every digit (0x3x).
     let value_position = index + name_length + 1;
     let value_word = read_u64(buffer, value_position);
+    // byte 0's bit 4, complemented, shifted to the sign bit and
+    // arithmetic-shifted back down: all-ones iff the first byte is '-'
     let signed = ((!value_word << 59) as i64) >> 63;
+    // zero out the '-' byte so only digit and dot bytes remain
     let unsigned_word = value_word & !(signed as u64 & 0xFF);
+    // 0x10101000 selects bit 4 of bytes 1..3; the complement marks the
+    // dot, and its bit index (12, 20 or 28) encodes the dot position
     let dot_bit = (!value_word & 0x10101000).trailing_zeros() as usize;
+    // line the hundreds/tens/units digits up at fixed byte positions
     let digits = (unsigned_word << (28 - dot_bit)) & 0x0F000F0F00;
+    // one multiply gathers d*100 + d*10 + d into bits 32..41
     let magnitude = (digits.wrapping_mul(0x640A0001) >> 32) & 0x3FF;
+    // two's-complement negate iff signed is all-ones
     let value = (magnitude as i64 ^ signed) - signed;
     record(buffer, table, index, name_length, word0, word1, value);
     value_position + (dot_bit >> 3) + 3
@@ -187,6 +208,10 @@ unsafe fn record(
             };
             return;
         }
+        // fold the three equality checks into one word so the hit test
+        // is a single well-predicted branch; zero iff all three match.
+        // Names of at most 16 bytes live entirely in word0/word1, so
+        // only longer ones need the byte comparison against the arena.
         let key_difference = (slot.length ^ name_length as i64)
             | (slot.word0 ^ word0) as i64
             | (slot.word1 ^ word1) as i64;
@@ -239,9 +264,14 @@ unsafe fn scan_past_newline(buffer: *const u8, limit: usize, mut index: usize) -
     limit
 }
 
-/// Parse every line starting in [parse_from, boundary): two interleaved
-/// cursors, remainders finish single-cursor. Final lines may run past
-/// `boundary` into the chunk's slop, which is safe and by design.
+/// Parse every line starting in [parse_from, boundary): the range is
+/// split in two and walked by two interleaved cursors, one line each
+/// per loop turn, remainders finishing single-cursor. The point is
+/// instruction-level parallelism, not caching: one line's work is a
+/// long dependency chain (load name words, find the semicolon, hash,
+/// load the slot, compare, update), and two independent chains overlap
+/// in the out-of-order window. Final lines may run past `boundary`
+/// into the chunk's slop, which is safe and by design.
 unsafe fn pair_lines(buffer: *const u8, table: &mut Table, parse_from: usize, boundary: usize) {
     let half = parse_from + (boundary.saturating_sub(parse_from)) / 2;
     let split = if half >= boundary {
@@ -292,6 +322,8 @@ fn process_chunk(
         assert!(got > 0, "unexpected EOF mid-file");
         filled += got;
     }
+    // zero the tail so the parser's up-to-16-byte lookahead past the
+    // final newline reads no stray digits or semicolons
     buffer[wanted..wanted + 32].fill(0);
     let pointer = buffer.as_ptr();
     unsafe {
@@ -359,6 +391,8 @@ fn main() {
             table
         }));
     }
+    // BTreeMap iterates in byte order, which is the output order the
+    // challenge requires
     let mut merged: BTreeMap<Vec<u8>, (i64, i64, i64, i64)> = BTreeMap::new();
     for handle in handles {
         let table = handle.join().expect("worker panicked");
