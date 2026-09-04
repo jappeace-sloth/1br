@@ -19,7 +19,8 @@ cooldowns in between:
 | implementation | per-line mechanism | instructions per 100M rows | 1B wall |
 |----------------|--------------------|----------------------------|---------|
 | Haskell native IO ([src/](src/)) | raw IO binds | 17.769B | 1.27s best cold, 1.3s - 1.5s sustained |
-| Haskell effectful | `Eff` bind + `liftIO` per row | 17.769B (+0.000%) | identical to native |
+| Haskell effectful (static) | `Eff` bind + `liftIO` per row | 17.769B (+0.000%) | identical to native |
+| Haskell effectful (dynamic) | `send` through an interpreted `StepLineEffect` per row | 32.590B (+83%) | ~3.1s (2.3x native) |
 | Haskell mtl | `ReaderT` env, `asks` + `liftIO` per row | 18.451B (+3.8%) | identical within noise |
 | Rust ([rust/](rust/)) | none (the control) | ~11.8B | 1.05s best cold |
 | Rust via hand-tuned LLVM IR | same source, llc pipeline | ~11.8B | identical to rustc -O |
@@ -53,8 +54,20 @@ instructions, effectful 17.769 (zero cost, GHC inlines the `Eff`
 newtype and `liftIO` away entirely), mtl 18.451 (+3.8%, about seven
 instructions per row, which is not dictionary passing but the two
 reader `asks` per line re-reading environment fields). Billion-row
-wall times for all three are within noise of each other on 16
-threads. An earlier measurement that suggested a 35% effectful penalty
+wall times for those three are within noise of each other on 16
+threads.
+
+`exe-effectful-dynamic` is the other half of the effectful story: the
+line advance is a proper dynamically-dispatched domain effect
+(`StepLineEffect`, with every IO the walker needs behind it, so the
+walker carries no `IOE` and is reinterpretable wholesale against a
+mock buffer or tracing handler). That buys the abstraction effectful
+exists for, and its price on this loop is the full retail one: the
+`send` plus handler round trip costs ~148 instructions per row, more
+than the entire parsing algorithm (32.6 versus 17.8 billion per 100M
+rows, wall 2.3x native). The lesson is the standard effectful
+guidance made concrete: static dispatch and `liftIO` are free,
+dynamic dispatch is for operations coarser than forty cycles. An earlier measurement that suggested a 35% effectful penalty
 turned out to be benchmark ordering (the first binary in each round
 paid the page-cache warmup) plus thermal throttling, which is worth
 remembering before accusing an abstraction.

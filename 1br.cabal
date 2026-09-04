@@ -99,6 +99,15 @@ executable exe-effectful
       1br
   ghc-options: -Wno-unused-packages
 
+executable exe-effectful-dynamic
+  import: common-options
+  main-is: MainEffectfulDynamic.hs
+  hs-source-dirs:
+      app
+  build-depends:
+      1br
+  ghc-options: -Wno-unused-packages
+
 executable exe-mtl
   import: common-options
   main-is: MainMtl.hs

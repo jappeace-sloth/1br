@@ -47,11 +47,17 @@ tests externalBinaries = testGroup "1br"
   : testGroup "effectful official samples"
       (fmap (inProcessSampleCase AggregateEffectful.processFile)
         officialSamples)
+  : testGroup "effectful-dynamic official samples"
+      (fmap (inProcessSampleCase AggregateEffectful.processFileDynamic)
+        officialSamples)
   : testGroup "mtl official samples"
       (fmap (inProcessSampleCase AggregateMtl.processFile) officialSamples)
   : testCase "generated file aggregates deterministically" generatorRoundTrip
   : testCase "effectful matches native on a generated file"
       (inProcessGeneratedMatch "effectful" AggregateEffectful.processFile)
+  : testCase "effectful-dynamic matches native on a generated file"
+      (inProcessGeneratedMatch "effectful-dynamic"
+        AggregateEffectful.processFileDynamic)
   : testCase "mtl matches native on a generated file"
       (inProcessGeneratedMatch "mtl" AggregateMtl.processFile)
   : fmap externalBinaryTests externalBinaries
