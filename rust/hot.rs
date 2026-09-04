@@ -72,15 +72,19 @@ struct TableRef {
     arena_len: usize,
 }
 
-/// Parse one line starting at `index`, fold it into the table, and
-/// return the next line's start (or an error via `status`).
+/// Parse one line starting at `cursor`, fold it into the table, and
+/// return a pointer to the next line's start (or an error via
+/// `status`). The cursor is a raw pointer, not a buffer index:
+/// reading the emitted assembly showed
+/// index-based cursors kept the buffer base live (and spilled) for a
+/// base+index addressing computation on every single line, where a
+/// self-contained pointer needs neither.
 #[inline(always)]
 unsafe fn step_line(
-    buffer: *const u8,
     table: &mut TableRef,
-    index: usize,
+    cursor: *const u8,
     status: &mut i32,
-) -> usize {
+) -> *const u8 {
     // Both name words load unconditionally and the semicolon position
     // resolves arithmetically: whether a name is shorter or longer than
     // eight bytes varies per station, so branching on it would
@@ -88,8 +92,8 @@ unsafe fn step_line(
     // position within each word, and because trailing_zeros of an
     // empty match word is 64, they equal 8 exactly when that word has
     // no semicolon, which the arithmetic below leans on.
-    let word_a = read_u64(buffer, index);
-    let word_b = read_u64(buffer, index + 8);
+    let word_a = read_u64(cursor, 0);
+    let word_b = read_u64(cursor, 8);
     let match_a = semicolon_matches(word_a);
     let match_b = semicolon_matches(word_b);
     let byte_a = (match_a.trailing_zeros() >> 3) as usize;
@@ -100,11 +104,11 @@ unsafe fn step_line(
     let (name_length, word0, word1);
     if match_a | match_b == 0 {
         // names longer than 16 bytes: byte-wise fallback, rare
-        let mut end = index + 16;
-        while *buffer.add(end) != b';' {
-            end += 1;
+        let mut end = cursor.add(16);
+        while *end != b';' {
+            end = end.add(1);
         }
-        name_length = end - index;
+        name_length = end.offset_from(cursor) as usize;
         word0 = word_a;
         word1 = word_b;
     } else {
@@ -120,8 +124,8 @@ unsafe fn step_line(
     // value: byte 0 is '-' or a digit, and the dot sits at byte 1, 2
     // or 3. Bit 4 of every byte distinguishes them: it is 0 for '-'
     // (0x2d) and '.' (0x2e) but 1 for every digit (0x3x).
-    let value_position = index + name_length + 1;
-    let value_word = read_u64(buffer, value_position);
+    let value_cursor = cursor.add(name_length + 1);
+    let value_word = read_u64(value_cursor, 0);
     // byte 0's bit 4, complemented, shifted to the sign bit and
     // arithmetic-shifted back down: all-ones iff the first byte is '-'
     let signed = ((!value_word << 59) as i64) >> 63;
@@ -136,8 +140,8 @@ unsafe fn step_line(
     let magnitude = (digits.wrapping_mul(0x640A0001) >> 32) & 0x3FF;
     // two's-complement negate iff signed is all-ones
     let value = (magnitude as i64 ^ signed) - signed;
-    record(buffer, table, index, name_length, word0, word1, value, status);
-    value_position + (dot_bit >> 3) + 3
+    record(table, cursor, name_length, word0, word1, value, status);
+    value_cursor.add((dot_bit >> 3) + 3)
 }
 
 /// Linear-probe for the station's slot and fold one measurement in,
@@ -146,9 +150,8 @@ unsafe fn step_line(
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 unsafe fn record(
-    buffer: *const u8,
     table: &mut TableRef,
-    name_offset: usize,
+    name_pointer: *const u8,
     name_length: usize,
     word0: u64,
     word1: u64,
@@ -166,7 +169,7 @@ unsafe fn record(
                 return;
             }
             core::ptr::copy_nonoverlapping(
-                buffer.add(name_offset),
+                name_pointer,
                 table.arena.add(arena_offset),
                 name_length,
             );
@@ -192,7 +195,7 @@ unsafe fn record(
             | (slot.word1 ^ word1) as i64;
         if key_difference == 0
             && (name_length <= 16
-                || long_names_equal(table, slot_index, buffer, name_offset, name_length))
+                || long_names_equal(table, slot_index, name_pointer, name_length))
         {
             let slot = &mut *table.slots.add(slot_index);
             if value < slot.min {
@@ -218,8 +221,7 @@ unsafe fn record(
 unsafe fn long_names_equal(
     table: &TableRef,
     slot_index: usize,
-    buffer: *const u8,
-    name_offset: usize,
+    name_pointer: *const u8,
     name_length: usize,
 ) -> bool {
     let slot = &*table.slots.add(slot_index);
@@ -228,7 +230,7 @@ unsafe fn long_names_equal(
         name_length - 16,
     );
     let looked_up =
-        core::slice::from_raw_parts(buffer.add(name_offset + 16), name_length - 16);
+        core::slice::from_raw_parts(name_pointer.add(16), name_length - 16);
     stored == looked_up
 }
 
@@ -270,16 +272,19 @@ pub unsafe extern "C" fn parse_chunk(
     } else {
         scan_past_newline(buffer, boundary, half)
     };
-    let (mut cursor_a, mut cursor_b) = (parse_from, split);
-    while cursor_a < split && cursor_b < boundary && status == PARSE_OK {
-        cursor_a = step_line(buffer, &mut table, cursor_a, &mut status);
-        cursor_b = step_line(buffer, &mut table, cursor_b, &mut status);
+    let split_pointer = buffer.add(split);
+    let boundary_pointer = buffer.add(boundary);
+    let mut cursor_a = buffer.add(parse_from);
+    let mut cursor_b = split_pointer;
+    while cursor_a < split_pointer && cursor_b < boundary_pointer && status == PARSE_OK {
+        cursor_a = step_line(&mut table, cursor_a, &mut status);
+        cursor_b = step_line(&mut table, cursor_b, &mut status);
     }
-    while cursor_a < split && status == PARSE_OK {
-        cursor_a = step_line(buffer, &mut table, cursor_a, &mut status);
+    while cursor_a < split_pointer && status == PARSE_OK {
+        cursor_a = step_line(&mut table, cursor_a, &mut status);
     }
-    while cursor_b < boundary && status == PARSE_OK {
-        cursor_b = step_line(buffer, &mut table, cursor_b, &mut status);
+    while cursor_b < boundary_pointer && status == PARSE_OK {
+        cursor_b = step_line(&mut table, cursor_b, &mut status);
     }
     *arena_len = table.arena_len;
     status

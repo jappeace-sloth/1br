@@ -42,9 +42,18 @@ Measured on the repo's AMD Ryzen AI 7 350 container: the module build,
 the llc -O3 rebuild and an llc -mcpu=znver4 rebuild are statistically
 identical on the billion-row file, and the emitted IR contains no
 panic or bounds-check branches to hand-remove. rustc -O already sits
-on the floor for this source shape; the remaining gap to the ~50
-algorithmic instructions per line is live-state spilling that only a
-different source structure would change.
+on the floor for this source shape.
+
+Hand-reading the emitted assembly did pay once, at the source level:
+index-based cursors kept the buffer base spilled and reloaded for a
+base+index computation on every line, so the cursors became raw
+pointers (118 instructions per line, down from 122, ~3% fewer
+cycles). A literal hand-edit of the remaining assembly found nothing
+safe to take: every register is live, LLVM already re-materializes
+the SWAR constants where that helps, the frequently-reloaded stack
+slots hold rotating per-iteration values rather than invariants, and
+Zen 5's memory renaming makes the surviving stack reloads close to
+free anyway, which is how the loop sustains IPC 3.2 despite them.
 
 ## Testing
 
