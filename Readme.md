@@ -74,9 +74,18 @@ exists for, and its price on this loop is the full retail one: the
 `send` plus handler round trip costs ~148 instructions per row, 83%
 of what the entire Haskell parse pipeline spends (178/row) and more
 than the whole algorithm costs Rust (118/row); totals 32.6 versus
-17.8 billion per 100M rows, wall 2.3x native. The lesson is the standard effectful
-guidance made concrete: static dispatch and `liftIO` are free,
-dynamic dispatch is for operations coarser than forty cycles. An earlier measurement that suggested a 35% effectful penalty
+17.8 billion per 100M rows, wall 2.3x native.
+
+The summary the table earns: effectful is as fast as IO even when
+you use effects, as long as they are statically dispatched; what
+costs is dynamic dispatch specifically, and only at fine grain. Note
+that effectful's own documentation says "when in doubt, use dynamic
+dispatch as it's more flexible" and offers no granularity guidance,
+so the caveat here is this benchmark's finding, not theirs: the
+`send` round trip is a fixed ~148-instruction price that a
+forty-cycle line parse cannot absorb and an ordinary file read or
+request handler absorbs without noticing. You pay for late binding
+exactly when you bind late. An earlier measurement that suggested a 35% effectful penalty
 turned out to be benchmark ordering (the first binary in each round
 paid the page-cache warmup) plus thermal throttling, which is worth
 remembering before accusing an abstraction.
