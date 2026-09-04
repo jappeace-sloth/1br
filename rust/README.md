@@ -5,7 +5,11 @@ constant-for-constant, to price GHC's pinned-register calling
 convention: GHC reserves ten x86-64 general-purpose registers for the
 STG machine, rustc/LLVM allocates the full file. Identical IPC on this
 machine (~3.2), but 118 instructions per line against Haskell's 178
-(122 before the pointer-cursor change described under Findings).
+(122 before the pointer-cursor change described under Findings). Note
+the ~50% instruction gap shows up as ~40% in core cycles but only ~20%
+in wall time: both implementations share the kernel pread-copy floor,
+and SMT (16 threads on 8 cores) absorbs part of the extra cycle load,
+so the whole-program wall clock understates the codegen difference.
 
 ## Layout
 
