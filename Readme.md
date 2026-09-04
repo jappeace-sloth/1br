@@ -63,9 +63,10 @@ line advance is a proper dynamically-dispatched domain effect
 walker carries no `IOE` and is reinterpretable wholesale against a
 mock buffer or tracing handler). That buys the abstraction effectful
 exists for, and its price on this loop is the full retail one: the
-`send` plus handler round trip costs ~148 instructions per row, more
-than the entire parsing algorithm (32.6 versus 17.8 billion per 100M
-rows, wall 2.3x native). The lesson is the standard effectful
+`send` plus handler round trip costs ~148 instructions per row, 83%
+of what the entire Haskell parse pipeline spends (178/row) and more
+than the whole algorithm costs Rust (118/row); totals 32.6 versus
+17.8 billion per 100M rows, wall 2.3x native. The lesson is the standard effectful
 guidance made concrete: static dispatch and `liftIO` are free,
 dynamic dispatch is for operations coarser than forty cycles. An earlier measurement that suggested a 35% effectful penalty
 turned out to be benchmark ordering (the first binary in each round
