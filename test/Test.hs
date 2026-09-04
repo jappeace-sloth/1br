@@ -1,6 +1,7 @@
 module Main where
 
 import Aggregate qualified
+import AggregateEffectful qualified
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as ByteStringChar8
 import Data.ByteString qualified as ByteString
@@ -42,9 +43,28 @@ lookupExternalBinaries = do
 tests :: [(String, FilePath)] -> TestTree
 tests externalBinaries = testGroup "1br"
   ( testGroup "official samples" (fmap sampleCase officialSamples)
+  : testGroup "effectful official samples"
+      (fmap effectfulSampleCase officialSamples)
   : testCase "generated file aggregates deterministically" generatorRoundTrip
+  : testCase "effectful matches native on a generated file"
+      effectfulGeneratedMatch
   : fmap externalBinaryTests externalBinaries
   )
+
+effectfulSampleCase :: String -> TestTree
+effectfulSampleCase name = testCase name $ do
+  expected <- ByteStringChar8.readFile ("test/samples/" <> name <> ".out")
+  actual <- AggregateEffectful.processFile ("test/samples/" <> name <> ".txt")
+  assertEqual name expected actual
+
+effectfulGeneratedMatch :: IO ()
+effectfulGeneratedMatch = do
+  let path = "test-generated-effectful.txt"
+  Generate.generateFile 10000 path
+  nativeReport <- Aggregate.processFile path
+  effectfulReport <- AggregateEffectful.processFile path
+  removeFile path
+  assertEqual "reports identical" nativeReport effectfulReport
 
 externalBinaryTests :: (String, FilePath) -> TestTree
 externalBinaryTests (label, binary) = testGroup (label <> " binary")

@@ -61,6 +61,7 @@ library
   import: common-options
   exposed-modules:
       Aggregate
+      AggregateEffectful
       Generate
   other-modules:
       Paths_1br
@@ -75,11 +76,21 @@ library
   build-depends:
       bytestring,
       containers,
+      effectful-core,
       primitive
 
 executable exe
   import: common-options
   main-is: Main.hs
+  hs-source-dirs:
+      app
+  build-depends:
+      1br
+  ghc-options: -Wno-unused-packages
+
+executable exe-effectful
+  import: common-options
+  main-is: MainEffectful.hs
   hs-source-dirs:
       app
   build-depends:

@@ -22,7 +22,19 @@
 -- between the reader and the bit manipulation.
 module Aggregate
   ( main
+  , mainWith
   , processFile
+    -- * Shared machinery for alternative drivers
+    --
+    -- | AggregateEffectful reuses everything below and differs only in
+    -- how it walks lines within a chunk, so any output difference
+    -- between the two is the effect system's doing and nothing else.
+  , ChunkParser
+  , processFileWith
+  , WorkerTable
+  , pairLines
+  , stepLine
+  , scanPastNewline
   ) where
 
 import Control.Concurrent (forkIO, getNumCapabilities)
@@ -70,17 +82,29 @@ foreign import ccall unsafe "lseek"
   c_lseek :: CInt -> CLong -> CInt -> IO CLong
 
 main :: IO ()
-main = do
+main = mainWith processFile
+
+mainWith :: (FilePath -> IO ByteString) -> IO ()
+mainWith aggregate = do
   arguments <- getArgs
   case arguments of
-    [] -> ByteString.putStr =<< processFile "measurements.txt"
-    [path] -> ByteString.putStr =<< processFile path
+    [] -> ByteString.putStr =<< aggregate "measurements.txt"
+    [path] -> ByteString.putStr =<< aggregate path
     _ -> die "usage: exe [measurements.txt]"
 
 -- | Run the whole pipeline on one file and return the formatted report,
 -- e.g. @{Abha=-23.0\/18.0\/59.2, Adamstown=...}\\n@.
 processFile :: FilePath -> IO ByteString
-processFile path = do
+processFile = processFileWith pairLines
+
+-- | Parses every line starting in @[parseFrom, boundary)@ of a chunk
+-- buffer into the table: @parser buffer table parseFrom boundary@.
+type ChunkParser = Ptr Word8 -> WorkerTable -> Int -> Int -> IO ()
+
+-- | The whole pipeline with the per-chunk line walker pluggable; the
+-- indirect call happens once per chunk, far off the hot path.
+processFileWith :: ChunkParser -> FilePath -> IO ByteString
+processFileWith parser path = do
   fileDescriptor <- withCString path (`c_open` 0)
   when (fileDescriptor < 0) $ die (path <> ": cannot open")
   dataSize64 <- c_lseek fileDescriptor 0 2
@@ -91,7 +115,7 @@ processFile path = do
       lastByte <- preadLastByte fileDescriptor dataSize
       when (lastByte /= newlineByte) $
         die (path <> ": missing trailing newline, refusing to parse")
-      perStation <- aggregateFile fileDescriptor dataSize
+      perStation <- aggregateFile parser fileDescriptor dataSize
       pure
         (LazyByteString.toStrict
           (Builder.toLazyByteString (formatReport perStation)))
@@ -122,8 +146,8 @@ preadLastByte fileDescriptor dataSize = do
 -- chunk) so a delayed core cannot stretch the whole run; because
 -- stored names must outlive the reused read buffer, first sight of a
 -- station copies its name into a per-worker arena.
-aggregateFile :: CInt -> Int -> IO (Map ByteString StationStats)
-aggregateFile fileDescriptor dataSize = do
+aggregateFile :: ChunkParser -> CInt -> Int -> IO (Map ByteString StationStats)
+aggregateFile parser fileDescriptor dataSize = do
   workerCount <- getNumCapabilities
   let chunkCount = workerCount * chunksPerWorker
   nextChunk <- newIORef 0
@@ -134,7 +158,7 @@ aggregateFile fileDescriptor dataSize = do
       let bufferBytes = chunkLength dataSize chunkCount + 1 + chunkSlop + 32
       buffer <- mallocBytes bufferBytes
       table <- newTable
-      readWorkLoop fileDescriptor dataSize chunkCount table buffer nextChunk
+      readWorkLoop parser fileDescriptor dataSize chunkCount table buffer nextChunk
       free buffer
       putMVar resultVar table
     pure resultVar
@@ -158,22 +182,25 @@ chunkSlop = 160
 
 -- | Claim and process chunks until the shared counter runs off the end.
 readWorkLoop
-  :: CInt -> Int -> Int -> WorkerTable -> Ptr Word8 -> IORef Int -> IO ()
-readWorkLoop fileDescriptor dataSize chunkCount table buffer nextChunk = do
+  :: ChunkParser -> CInt -> Int -> Int -> WorkerTable -> Ptr Word8
+  -> IORef Int -> IO ()
+readWorkLoop parser fileDescriptor dataSize chunkCount table buffer nextChunk = do
   claimed <- atomicModifyIORef' nextChunk (\index -> (index + 1, index))
   if claimed >= chunkCount
     then pure ()
     else do
-      processChunk fileDescriptor dataSize chunkCount table buffer claimed
-      readWorkLoop fileDescriptor dataSize chunkCount table buffer nextChunk
+      processChunk parser fileDescriptor dataSize chunkCount table buffer claimed
+      readWorkLoop parser fileDescriptor dataSize chunkCount table buffer nextChunk
 
 -- | Read one chunk (plus one leading byte to find the first line start
 -- and slop for the trailing line) and parse every line that STARTS
 -- inside @[chunkStart, chunkEnd)@. Lines may end past chunkEnd inside
 -- the slop; the next chunk skips them because it only starts parsing
 -- at its own first line start.
-processChunk :: CInt -> Int -> Int -> WorkerTable -> Ptr Word8 -> Int -> IO ()
-processChunk fileDescriptor dataSize chunkCount table buffer claimed = do
+processChunk
+  :: ChunkParser -> CInt -> Int -> Int -> WorkerTable -> Ptr Word8 -> Int
+  -> IO ()
+processChunk parser fileDescriptor dataSize chunkCount table buffer claimed = do
   let stride = chunkLength dataSize chunkCount
   let chunkStart = claimed * stride
   let chunkEnd = min dataSize (chunkStart + stride)
@@ -190,7 +217,7 @@ processChunk fileDescriptor dataSize chunkCount table buffer claimed = do
         if chunkStart == 0
           then pure 0
           else scanPastNewline buffer wanted 0
-      pairLines buffer table parseFrom boundary
+      parser buffer table parseFrom boundary
 
 -- | Buffer index just past the first newline at or after @index@,
 -- capped at @limit@ (a chunk with no newline yields the cap, which
