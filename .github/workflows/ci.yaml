@@ -35,7 +35,9 @@ jobs:
         GH_TOKEN: ${{ github.token }}
 
   cabal:
-    runs-on: ${{ matrix.os }}
+    # Linux only: the aggregator preads through POSIX FFI (open/lseek/
+    # pread), so Windows cannot build it and macOS is not a target.
+    runs-on: ubuntu-latest
 
     strategy:
       fail-fast: true
@@ -45,7 +47,6 @@ jobs:
           - '9.10'
           - '9.8'
           - '9.6'
-        os: [ubuntu-latest, macOS-latest, windows-latest]
 
     steps:
     - uses: actions/checkout@v4
