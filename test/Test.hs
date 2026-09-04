@@ -1,6 +1,8 @@
 module Main where
 
 import Aggregate qualified
+import AggregateEffectful qualified
+import AggregateMtl qualified
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as ByteStringChar8
 import Data.ByteString qualified as ByteString
@@ -42,9 +44,39 @@ lookupExternalBinaries = do
 tests :: [(String, FilePath)] -> TestTree
 tests externalBinaries = testGroup "1br"
   ( testGroup "official samples" (fmap sampleCase officialSamples)
+  : testGroup "effectful official samples"
+      (fmap (inProcessSampleCase AggregateEffectful.processFile)
+        officialSamples)
+  : testGroup "effectful-dynamic official samples"
+      (fmap (inProcessSampleCase AggregateEffectful.processFileDynamic)
+        officialSamples)
+  : testGroup "mtl official samples"
+      (fmap (inProcessSampleCase AggregateMtl.processFile) officialSamples)
   : testCase "generated file aggregates deterministically" generatorRoundTrip
+  : testCase "effectful matches native on a generated file"
+      (inProcessGeneratedMatch "effectful" AggregateEffectful.processFile)
+  : testCase "effectful-dynamic matches native on a generated file"
+      (inProcessGeneratedMatch "effectful-dynamic"
+        AggregateEffectful.processFileDynamic)
+  : testCase "mtl matches native on a generated file"
+      (inProcessGeneratedMatch "mtl" AggregateMtl.processFile)
   : fmap externalBinaryTests externalBinaries
   )
+
+inProcessSampleCase :: (FilePath -> IO ByteString) -> String -> TestTree
+inProcessSampleCase aggregate name = testCase name $ do
+  expected <- ByteStringChar8.readFile ("test/samples/" <> name <> ".out")
+  actual <- aggregate ("test/samples/" <> name <> ".txt")
+  assertEqual name expected actual
+
+inProcessGeneratedMatch :: String -> (FilePath -> IO ByteString) -> IO ()
+inProcessGeneratedMatch label aggregate = do
+  let path = "test-generated-" <> label <> "-inprocess.txt"
+  Generate.generateFile 10000 path
+  nativeReport <- Aggregate.processFile path
+  variantReport <- aggregate path
+  removeFile path
+  assertEqual "reports identical" nativeReport variantReport
 
 externalBinaryTests :: (String, FilePath) -> TestTree
 externalBinaryTests (label, binary) = testGroup (label <> " binary")

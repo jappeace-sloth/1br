@@ -16,17 +16,79 @@ billion rows, file in page cache. The chip thermal-throttles after a
 few sustained seconds, so honest numbers are cold single shots with
 cooldowns in between:
 
-| implementation | best cold shot | sustained |
-|----------------|----------------|-----------|
-| Haskell (this repo) | 1.27s | 1.3s - 1.5s |
-| Rust port ([rust/](rust/)) | 1.05s | 1.1s - 1.2s |
+| implementation | per-line mechanism | instructions per 100M rows | 1B wall |
+|----------------|--------------------|----------------------------|---------|
+| Haskell native IO ([src/](src/)) | raw IO binds | 17.769B | 1.27s best cold, 1.3s - 1.5s sustained |
+| Haskell effectful (static) | `Eff` bind + `liftIO` per row | 17.769B (+0.000%) | identical to native |
+| Haskell effectful (dynamic) | `send` through an interpreted `StepLineEffect` per row | 32.590B (+83%) | ~3.1s (2.3x native) |
+| Haskell mtl | class-dispatched `MonadStepLine` capability per row | 18.451B (+3.8%) | identical within noise |
+| Rust ([rust/](rust/)) | none (the control) | ~11.8B | 1.05s best cold |
+| Rust via hand-tuned LLVM IR | same source, llc pipeline | ~11.8B | identical to rustc -O |
+| MicroHs ([mhs/](mhs/)) | combinator interpreter | not comparable | ~10h extrapolated |
+
+All six produce byte-identical output and run the same test suite.
 
 The Rust port mirrors the algorithm constant-for-constant and passes
-the identical test suite; the ~20% gap is GHC's pinned-register
-calling convention made visible (118 versus 178 instructions per line
-at identical IPC; details in [rust/README.md](rust/README.md), which
+the identical test suite. GHC's pinned-register calling convention
+costs ~50% in instructions per line (178 versus 118 at identical IPC,
+so ~40% in measured core cycles too); the wall-clock gap compresses to
+~20% because two shared costs dilute the hot loop: both binaries pay
+the same kernel pread-copy floor, and with 16 threads on 8 cores SMT
+absorbs part of the extra cycle load (details in
+[rust/README.md](rust/README.md), which
 also documents the hand-tunable LLVM IR build that established rustc's
 output already sits on the machine's floor for this source shape).
+
+### Effect system footnote
+
+`exe-effectful` and `exe-mtl` run the same pipeline with the per-line
+loop threaded through
+[effectful](https://hackage.haskell.org/package/effectful)'s `Eff`
+monad and an idiomatic
+[mtl](https://hackage.haskell.org/package/mtl) `MonadReader` +
+`MonadIO` stack respectively: one effect bind plus a `liftIO` per row,
+a billion rows per run, everything else shared with the native
+implementation (same parser, same table, byte-identical output, same
+test suite). Measured per 100M rows: native 17.769 billion
+instructions, effectful 17.769 (zero cost, GHC inlines the `Eff`
+newtype and `liftIO` away entirely), mtl 18.451 (+3.8%). The mtl
+walker's operations are a proper capability class (`MonadStepLine`,
+no `MonadIO` in the walker, reinterpretation = another carrier type
+with another instance), and the class version measures identical to
+the digit with a plain `asks`+`liftIO` version: GHC specializes the
+dictionaries away completely, leaving only the environment-field
+reads inside the methods. Billion-row wall times for those three are
+within noise of each other on 16 threads.
+
+So the same reinterpretable-domain-effect abstraction costs +3.8%
+under mtl's compile-time dispatch and +83% under effectful's runtime
+dispatch; what mtl charges instead is boilerplate per interpretation
+and interpreters fixed at compile time.
+
+`exe-effectful-dynamic` is the other half of the effectful story: the
+line advance is a proper dynamically-dispatched domain effect
+(`StepLineEffect`, with every IO the walker needs behind it, so the
+walker carries no `IOE` and is reinterpretable wholesale against a
+mock buffer or tracing handler). That buys the abstraction effectful
+exists for, and its price on this loop is the full retail one: the
+`send` plus handler round trip costs ~148 instructions per row, 83%
+of what the entire Haskell parse pipeline spends (178/row) and more
+than the whole algorithm costs Rust (118/row); totals 32.6 versus
+17.8 billion per 100M rows, wall 2.3x native.
+
+The summary the table earns: effectful is as fast as IO even when
+you use effects, as long as they are statically dispatched; what
+costs is dynamic dispatch specifically, and only at fine grain. Note
+that effectful's own documentation says "when in doubt, use dynamic
+dispatch as it's more flexible" and offers no granularity guidance,
+so the caveat here is this benchmark's finding, not theirs: the
+`send` round trip is a fixed ~148-instruction price that a
+forty-cycle line parse cannot absorb and an ordinary file read or
+request handler absorbs without noticing. You pay for late binding
+exactly when you bind late. An earlier measurement that suggested a 35% effectful penalty
+turned out to be benchmark ordering (the first binary in each round
+paid the page-cache warmup) plus thermal throttling, which is worth
+remembering before accusing an abstraction.
 
 ### MicroHs footnote
 
