@@ -8,7 +8,7 @@
 -- Decision: everything except the per-line loop is shared with
 -- "Aggregate" via its 'ChunkParser' hook, so the two implementations
 -- are byte-identical by construction and the ONLY difference is that
--- this module's line walker runs in 'Eff' — one effect-system bind
+-- this module's line walker runs in 'Eff': one effect-system bind
 -- plus a 'liftIO' per row, two of them per pair-loop turn, a billion
 -- rows per run. That is precisely where effect overhead would land,
 -- and nothing else is measured. Alternatives considered: running the
