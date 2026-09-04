@@ -17,13 +17,65 @@ let
          # need them and copying them into the store would be absurd
          && builtins.match "measurements.*[.]txt" base == null;
   };
+  # The Rust comparison port (rust/main.rs) built the same way a
+  # developer does: plain rustc, no crates. Bound here so the test
+  # suite's ONEBR_RUST_BIN can reference it from the native build.
+  rustBinary = pkgs.runCommand "1br-rust"
+    {
+      nativeBuildInputs = [ pkgs.rustc pkgs.gcc ];
+    } ''
+    mkdir -p $out/bin
+    rustc -O --edition 2021 ${src}/rust/main.rs -o $out/bin/onebr-rust
+  '';
+
+  # The hand-tunable-IR build of the same port: hot loop emitted as
+  # LLVM IR, lowered with llc, linked back in (see rust/README.md).
+  # Building it in CI proves the pipeline keeps working; llc comes
+  # from LLVM 20, which currently parses rustc 1.89's LLVM 21 IR.
+  rustLlBinary = pkgs.runCommand "1br-rust-ll"
+    {
+      nativeBuildInputs = [ pkgs.rustc pkgs.gcc pkgs.llvmPackages_20.llvm ];
+    } ''
+    mkdir -p $out/bin
+    rustc -O --edition 2021 --crate-type=lib --emit=llvm-ir \
+      ${src}/rust/hot.rs -o hot.ll
+    llc -O3 -relocation-model=pic -filetype=obj hot.ll -o hot.o
+    rustc -O --edition 2021 --cfg hot_extern ${src}/rust/main.rs \
+      -C link-arg=hot.o -o $out/bin/onebr-rust-ll
+  '';
+  # The MicroHs implementation (mhs/Main.hs): compiled to combinators
+  # run by MicroHs's small C evaluator. Only benchmarked on 10M rows
+  # (see the Readme note), but correctness-tested like the others.
+  mhsBinary = pkgs.runCommand "1br-mhs"
+    {
+      nativeBuildInputs = [ pkgs.microhs pkgs.gcc ];
+    } ''
+    mkdir -p $out/bin
+    cd ${src}/mhs
+    mhs -o$out/bin/onebr-mhs Main.hs
+  '';
 in
 {
   # The cabal build / library / executable derivation — what
   # 'nix-build' has always built. Kept here so CI builds the project
   # /and/ the hlint pass with a single 'nix-build nix/ci.nix' rather
-  # than two separate invocations.
-  native = import ../default.nix { inherit hpkgs; };
+  # than two separate invocations. The test suite additionally runs
+  # every official sample against the Rust port when ONEBR_RUST_BIN is
+  # set, so CI proves both implementations against the same fixtures.
+  native = pkgs.haskell.lib.compose.overrideCabal
+    (drv: {
+      preCheck = ''
+        export ONEBR_RUST_BIN=${rustBinary}/bin/onebr-rust
+        export ONEBR_RUST_LL_BIN=${rustLlBinary}/bin/onebr-rust-ll
+        export ONEBR_MHS_BIN=${mhsBinary}/bin/onebr-mhs
+      '';
+    })
+    (import ../default.nix { inherit hpkgs; });
+
+  # The Rust comparison ports, exposed so CI archives them as outputs.
+  rust = rustBinary;
+  rust-ll = rustLlBinary;
+  mhs = mhsBinary;
 
   # Enforce .hlint.yaml across app/src/test as part of CI. Treating
   # hlint as a derivation lets the same 'nix-build nix/ci.nix' run

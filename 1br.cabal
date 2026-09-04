@@ -110,4 +110,5 @@ test-suite unit
       bytestring,
       directory,
       primitive,
+      process,
       1br
