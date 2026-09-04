@@ -17,24 +17,34 @@ let
          # need them and copying them into the store would be absurd
          && builtins.match "measurements.*[.]txt" base == null;
   };
-in
-{
-  # The cabal build / library / executable derivation — what
-  # 'nix-build' has always built. Kept here so CI builds the project
-  # /and/ the hlint pass with a single 'nix-build nix/ci.nix' rather
-  # than two separate invocations.
-  native = import ../default.nix { inherit hpkgs; };
-
   # The Rust comparison port (rust/main.rs) built the same way a
-  # developer does: plain rustc, no crates. Building it in CI keeps the
-  # side-by-side benchmark honest as both implementations evolve.
-  rust = pkgs.runCommand "1br-rust"
+  # developer does: plain rustc, no crates. Bound here so the test
+  # suite's ONEBR_RUST_BIN can reference it from the native build.
+  rustBinary = pkgs.runCommand "1br-rust"
     {
       nativeBuildInputs = [ pkgs.rustc pkgs.gcc ];
     } ''
     mkdir -p $out/bin
     rustc -O --edition 2021 ${src}/rust/main.rs -o $out/bin/onebr-rust
   '';
+in
+{
+  # The cabal build / library / executable derivation — what
+  # 'nix-build' has always built. Kept here so CI builds the project
+  # /and/ the hlint pass with a single 'nix-build nix/ci.nix' rather
+  # than two separate invocations. The test suite additionally runs
+  # every official sample against the Rust port when ONEBR_RUST_BIN is
+  # set, so CI proves both implementations against the same fixtures.
+  native = pkgs.haskell.lib.compose.overrideCabal
+    (drv: {
+      preCheck = ''
+        export ONEBR_RUST_BIN=${rustBinary}/bin/onebr-rust
+      '';
+    })
+    (import ../default.nix { inherit hpkgs; });
+
+  # The Rust comparison port, exposed so CI archives it as an output.
+  rust = rustBinary;
 
   # Enforce .hlint.yaml across app/src/test as part of CI. Treating
   # hlint as a derivation lets the same 'nix-build nix/ci.nix' run

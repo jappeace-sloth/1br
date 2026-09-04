@@ -3,21 +3,85 @@ module Main where
 import Aggregate qualified
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as ByteStringChar8
+import Data.ByteString qualified as ByteString
 import Data.Primitive.SmallArray (SmallArray)
 import Generate qualified
 import System.Directory (removeFile)
+import System.Environment (lookupEnv)
+import System.Exit (ExitCode (ExitFailure, ExitSuccess))
+import System.IO (hClose, hSetBinaryMode)
+import System.Process
+    (CreateProcess (std_out), StdStream (CreatePipe), createProcess, proc,
+    waitForProcess)
 import Text.Read (readMaybe)
 import Test.Tasty
 import Test.Tasty.HUnit
 
 main :: IO ()
-main = defaultMain tests
+main = do
+  externalBinaries <- lookupExternalBinaries
+  defaultMain (tests externalBinaries)
 
-tests :: TestTree
-tests = testGroup "1br"
-  [ testGroup "official samples" (fmap sampleCase officialSamples)
-  , testCase "generated file aggregates deterministically" generatorRoundTrip
-  ]
+-- | The same suite runs against any number of external aggregator
+-- binaries (the Rust port, the hand-optimized IR build): every binary
+-- named by these environment variables faces the identical official
+-- samples plus a cross-check against the Haskell aggregate of a
+-- generated file. nix/ci.nix sets them, so CI always exercises the
+-- Rust port; a bare `cabal test` without the variables runs the
+-- Haskell-only suite.
+lookupExternalBinaries :: IO [(String, FilePath)]
+lookupExternalBinaries = do
+  rustBinary <- lookupEnv "ONEBR_RUST_BIN"
+  irBinary <- lookupEnv "ONEBR_RUST_LL_BIN"
+  pure
+    (concatMap
+      (\(label, found) -> maybe [] (\path -> [(label, path)]) found)
+      [("rust", rustBinary), ("rust-ll", irBinary)])
+
+tests :: [(String, FilePath)] -> TestTree
+tests externalBinaries = testGroup "1br"
+  ( testGroup "official samples" (fmap sampleCase officialSamples)
+  : testCase "generated file aggregates deterministically" generatorRoundTrip
+  : fmap externalBinaryTests externalBinaries
+  )
+
+externalBinaryTests :: (String, FilePath) -> TestTree
+externalBinaryTests (label, binary) = testGroup (label <> " binary")
+  ( fmap (externalSampleCase binary) officialSamples
+  <> [testCase "matches Haskell on a generated file"
+       (externalGeneratedMatch binary)]
+  )
+
+-- | Run an external aggregator binary and capture raw stdout bytes.
+runAggregatorBinary :: FilePath -> FilePath -> IO ByteString
+runAggregatorBinary binary input = do
+  (_stdin, Just outHandle, _stderr, processHandle) <-
+    createProcess (proc binary [input]) {std_out = CreatePipe}
+  hSetBinaryMode outHandle True
+  output <- ByteString.hGetContents outHandle
+  exitCode <- waitForProcess processHandle
+  hClose outHandle
+  case exitCode of
+    ExitSuccess -> pure output
+    ExitFailure code ->
+      error (binary <> " exited with " <> show code <> " on " <> input)
+
+externalSampleCase :: FilePath -> String -> TestTree
+externalSampleCase binary name = testCase name $ do
+  expected <- ByteStringChar8.readFile ("test/samples/" <> name <> ".out")
+  actual <- runAggregatorBinary binary ("test/samples/" <> name <> ".txt")
+  assertEqual name expected actual
+
+-- | The strongest cross-implementation check: both aggregators must
+-- produce byte-identical reports for the same generated file.
+externalGeneratedMatch :: FilePath -> IO ()
+externalGeneratedMatch binary = do
+  let path = "test-generated-external.txt"
+  Generate.generateFile 10000 path
+  haskellReport <- Aggregate.processFile path
+  externalReport <- runAggregatorBinary binary path
+  removeFile path
+  assertEqual "reports identical" haskellReport externalReport
 
 -- | Every sample pair shipped with the upstream 1brc repository: the
 -- .out file is the exact output the reference Java implementation
