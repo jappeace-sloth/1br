@@ -23,7 +23,7 @@ cooldowns in between:
 
 The Rust port mirrors the algorithm constant-for-constant and passes
 the identical test suite; the ~20% gap is GHC's pinned-register
-calling convention made visible (122 versus 178 instructions per line
+calling convention made visible (118 versus 178 instructions per line
 at identical IPC; details in [rust/README.md](rust/README.md), which
 also documents the hand-tunable LLVM IR build that established rustc's
 output already sits on the machine's floor for this source shape).
