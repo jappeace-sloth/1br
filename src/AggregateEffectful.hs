@@ -36,6 +36,9 @@ main = mainWith processFile
 processFile :: FilePath -> IO ByteString
 processFile = processFileWith effectfulChunkParser
 
+-- | 'ChunkParser' is @Ptr Word8 -> WorkerTable -> Int -> Int -> IO ()@
+-- (buffer, table, parseFrom, boundary); 'runEff' discharges the
+-- 'Eff' computation back to the IO that hook expects.
 effectfulChunkParser :: ChunkParser
 effectfulChunkParser buffer table parseFrom boundary =
   runEff (pairLinesEff buffer table parseFrom boundary)
