@@ -16,11 +16,17 @@ billion rows, file in page cache. The chip thermal-throttles after a
 few sustained seconds, so honest numbers are cold single shots with
 cooldowns in between:
 
-| run | wall time |
-|-----|-----------|
-| best (cold single shot, idle host) | 1.27s |
-| typical cold shot | 1.27s - 1.31s |
-| sustained repeats under load | ~1.3s - 1.5s |
+| implementation | best cold shot | sustained |
+|----------------|----------------|-----------|
+| Haskell (this repo) | 1.27s | 1.3s - 1.5s |
+| Rust port ([rust/](rust/)) | 1.05s | 1.1s - 1.2s |
+
+The Rust port mirrors the algorithm constant-for-constant and passes
+the identical test suite; the ~20% gap is GHC's pinned-register
+calling convention made visible (122 versus 178 instructions per line
+at identical IPC; details in [rust/README.md](rust/README.md), which
+also documents the hand-tunable LLVM IR build that established rustc's
+output already sits on the machine's floor for this source shape).
 
 The official 1brc winners clock 1.5s on eight dedicated EPYC 7502P
 (Zen2) cores; their code remains a few percent more cycle-efficient,

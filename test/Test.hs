@@ -49,7 +49,7 @@ externalBinaryTests :: (String, FilePath) -> TestTree
 externalBinaryTests (label, binary) = testGroup (label <> " binary")
   ( fmap (externalSampleCase binary) officialSamples
   <> [testCase "matches Haskell on a generated file"
-       (externalGeneratedMatch binary)]
+       (externalGeneratedMatch label binary)]
   )
 
 -- | Run an external aggregator binary and capture raw stdout bytes.
@@ -74,9 +74,12 @@ externalSampleCase binary name = testCase name $ do
 
 -- | The strongest cross-implementation check: both aggregators must
 -- produce byte-identical reports for the same generated file.
-externalGeneratedMatch :: FilePath -> IO ()
-externalGeneratedMatch binary = do
-  let path = "test-generated-external.txt"
+-- | The temp file is per-label: tasty runs tests concurrently, and two
+-- binaries sharing one generated file would race generation against
+-- deletion.
+externalGeneratedMatch :: String -> FilePath -> IO ()
+externalGeneratedMatch label binary = do
+  let path = "test-generated-" <> label <> ".txt"
   Generate.generateFile 10000 path
   haskellReport <- Aggregate.processFile path
   externalReport <- runAggregatorBinary binary path

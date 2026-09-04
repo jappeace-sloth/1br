@@ -27,6 +27,22 @@ let
     mkdir -p $out/bin
     rustc -O --edition 2021 ${src}/rust/main.rs -o $out/bin/onebr-rust
   '';
+
+  # The hand-tunable-IR build of the same port: hot loop emitted as
+  # LLVM IR, lowered with llc, linked back in (see rust/README.md).
+  # Building it in CI proves the pipeline keeps working; llc comes
+  # from LLVM 20, which currently parses rustc 1.89's LLVM 21 IR.
+  rustLlBinary = pkgs.runCommand "1br-rust-ll"
+    {
+      nativeBuildInputs = [ pkgs.rustc pkgs.gcc pkgs.llvmPackages_20.llvm ];
+    } ''
+    mkdir -p $out/bin
+    rustc -O --edition 2021 --crate-type=lib --emit=llvm-ir \
+      ${src}/rust/hot.rs -o hot.ll
+    llc -O3 -relocation-model=pic -filetype=obj hot.ll -o hot.o
+    rustc -O --edition 2021 --cfg hot_extern ${src}/rust/main.rs \
+      -C link-arg=hot.o -o $out/bin/onebr-rust-ll
+  '';
 in
 {
   # The cabal build / library / executable derivation — what
@@ -39,12 +55,14 @@ in
     (drv: {
       preCheck = ''
         export ONEBR_RUST_BIN=${rustBinary}/bin/onebr-rust
+        export ONEBR_RUST_LL_BIN=${rustLlBinary}/bin/onebr-rust-ll
       '';
     })
     (import ../default.nix { inherit hpkgs; });
 
-  # The Rust comparison port, exposed so CI archives it as an output.
+  # The Rust comparison ports, exposed so CI archives them as outputs.
   rust = rustBinary;
+  rust-ll = rustLlBinary;
 
   # Enforce .hlint.yaml across app/src/test as part of CI. Treating
   # hlint as a derivation lets the same 'nix-build nix/ci.nix' run
