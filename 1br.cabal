@@ -62,6 +62,7 @@ library
   exposed-modules:
       Aggregate
       AggregateEffectful
+      AggregateMtl
       Generate
   other-modules:
       Paths_1br
@@ -77,6 +78,7 @@ library
       bytestring,
       containers,
       effectful-core,
+      mtl,
       primitive
 
 executable exe
@@ -91,6 +93,15 @@ executable exe
 executable exe-effectful
   import: common-options
   main-is: MainEffectful.hs
+  hs-source-dirs:
+      app
+  build-depends:
+      1br
+  ghc-options: -Wno-unused-packages
+
+executable exe-mtl
+  import: common-options
+  main-is: MainMtl.hs
   hs-source-dirs:
       app
   build-depends:

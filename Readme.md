@@ -28,20 +28,26 @@ at identical IPC; details in [rust/README.md](rust/README.md), which
 also documents the hand-tunable LLVM IR build that established rustc's
 output already sits on the machine's floor for this source shape).
 
-### Effectful footnote
+### Effect system footnote
 
-`exe-effectful` runs the same pipeline with the per-line loop threaded
-through [effectful](https://hackage.haskell.org/package/effectful)'s
-`Eff` monad: one effect-system bind plus a `liftIO` per row, a billion
-rows per run, with everything else shared with the native
+`exe-effectful` and `exe-mtl` run the same pipeline with the per-line
+loop threaded through
+[effectful](https://hackage.haskell.org/package/effectful)'s `Eff`
+monad and an idiomatic
+[mtl](https://hackage.haskell.org/package/mtl) `MonadReader` +
+`MonadIO` stack respectively: one effect bind plus a `liftIO` per row,
+a billion rows per run, everything else shared with the native
 implementation (same parser, same table, byte-identical output, same
-test suite). Measured cost: none. perf counts 17.770 versus 17.769
-billion instructions per 100M rows, identical IPC, and interleaved
-billion-row wall times within noise of each other; GHC inlines the
-`Eff` newtype and `liftIO` away entirely. An earlier measurement that
-suggested a 35% penalty turned out to be benchmark ordering (the first
-binary in each round paid the page-cache warmup) plus thermal
-throttling, which is worth remembering before accusing an abstraction.
+test suite). Measured per 100M rows: native 17.769 billion
+instructions, effectful 17.769 (zero cost, GHC inlines the `Eff`
+newtype and `liftIO` away entirely), mtl 18.451 (+3.8%, about seven
+instructions per row, which is not dictionary passing but the two
+reader `asks` per line re-reading environment fields). Billion-row
+wall times for all three are within noise of each other on 16
+threads. An earlier measurement that suggested a 35% effectful penalty
+turned out to be benchmark ordering (the first binary in each round
+paid the page-cache warmup) plus thermal throttling, which is worth
+remembering before accusing an abstraction.
 
 ### MicroHs footnote
 
