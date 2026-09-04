@@ -24,6 +24,7 @@ poor thing thermal-throttles if you run it twice):
 | Haskell, mtl capability class | 18.5B, +3.8% | same as IO |
 | Haskell, effectful (dynamic dispatch) | 32.6B, +83% | 2.3x slower |
 | Rust, the control group ([rust/](rust/)) | 11.8B | **1.05s** |
+| Haskell in GHCi (bytecode interpreted) | n/a | ~5.3 min extrapolated |
 | MicroHs ([mhs/](mhs/)) | bless its heart | ~10 hours |
 
 ## Things we learned so you don't have to
@@ -57,10 +58,15 @@ rare case where it dominates: the send round trip is ~148 instructions,
 so a file read or a request never notices it and a forty-cycle parsed
 line very much does.
 
-MicroHs runs the same logic, correctly, through a combinator
-evaluator, in about 362 seconds per 10 million rows. Combinator
-self-optimization, it turns out, does not extend to register
-allocation.
+The same modules loaded into GHCi run interpreted at 32s per 100M
+rows, byte-identical output, about 250x slower than compiled. GHCi
+is the interpreter half of a JIT with the profile-and-compile half
+missing; that 250x is the gap the missing half would close. It still
+beats MicroHs by 100x because its bytecode calls into compiled
+primops and libraries, while MicroHs interprets combinators all the
+way down: 362 seconds per 10 million rows, correct throughout.
+Combinator self-optimization, it turns out, does not extend to
+register allocation.
 
 ## Usage
 
