@@ -4,145 +4,67 @@
 
 > Speed is the essence of war.
 
-The [one billion row challenge](https://github.com/gunnarmorling/1brc)
-in Haskell: aggregate the minimum, mean and maximum temperature per
-weather station out of a billion `name;temperature` lines, as fast as
-possible.
+The [one billion row challenge](https://github.com/gunnarmorling/1brc):
+a billion `name;temperature` lines go in, min/mean/max per weather
+station comes out, and the only question is how fast. The official
+record is 1.5 seconds (JVM, eight server cores). This repo does it in
+Haskell in **1.27 seconds** on a laptop, then keeps going, because one
+implementation is never enough when you have questions.
 
-## Results
+## The scoreboard
 
-On an AMD Ryzen AI 7 350 (8 cores, 16 threads, laptop class), one
-billion rows, file in page cache. The chip thermal-throttles after a
-few sustained seconds, so honest numbers are cold single shots with
-cooldowns in between:
+Six implementations, byte-identical output, one shared test suite.
+Numbers from an 8-core Ryzen AI 7 350 (cold single shots, because the
+poor thing thermal-throttles if you run it twice):
 
-| implementation | per-line mechanism | instructions per 100M rows | 1B wall |
-|----------------|--------------------|----------------------------|---------|
-| Haskell native IO ([src/](src/)) | raw IO binds | 17.769B | 1.27s best cold, 1.3s - 1.5s sustained |
-| Haskell effectful (static) | `Eff` bind + `liftIO` per row | 17.769B (+0.000%) | identical to native |
-| Haskell effectful (dynamic) | `send` through an interpreted `StepLineEffect` per row | 32.590B (+83%) | ~3.1s (2.3x native) |
-| Haskell mtl | class-dispatched `MonadStepLine` capability per row | 18.451B (+3.8%) | identical within noise |
-| Rust ([rust/](rust/)) | none (the control) | ~11.8B | 1.05s best cold |
-| Rust via hand-tuned LLVM IR | same source, llc pipeline | ~11.8B | identical to rustc -O |
-| MicroHs ([mhs/](mhs/)) | combinator interpreter | not comparable | ~10h extrapolated |
+| implementation | instructions per 100M rows | 1B wall |
+|----------------|----------------------------|---------|
+| Haskell, plain IO ([src/](src/)) | 17.8B | **1.27s** |
+| Haskell, effectful (static) | 17.8B, +0.000% | same as IO |
+| Haskell, mtl capability class | 18.5B, +3.8% | same as IO |
+| Haskell, effectful (dynamic dispatch) | 32.6B, +83% | 2.3x slower |
+| Rust, the control group ([rust/](rust/)) | 11.8B | **1.05s** |
+| MicroHs ([mhs/](mhs/)) | bless its heart | ~10 hours |
 
-All six produce byte-identical output and run the same test suite.
+## Things we learned so you don't have to
 
-The Rust port mirrors the algorithm constant-for-constant and passes
-the identical test suite. GHC's pinned-register calling convention
-costs ~50% in instructions per line (178 versus 118 at identical IPC,
-so ~40% in measured core cycles too); the wall-clock gap compresses to
-~20% because two shared costs dilute the hot loop: both binaries pay
-the same kernel pread-copy floor, and with 16 threads on 8 cores SMT
-absorbs part of the extra cycle load (details in
-[rust/README.md](rust/README.md), which
-also documents the hand-tunable LLVM IR build that established rustc's
-output already sits on the machine's floor for this source shape).
+The fast path is mmap-free: workers `pread` chunks into their own
+padded buffers, because the kernel copies from page cache faster than
+it faults pages in. Everything per-line is SWAR bit tricks in 64-bit
+words, the hash table slots are exactly one cache line, and the hot
+loop allocates nothing. The full war stories live as `Decision:`
+comments in [src/Aggregate.hs](src/Aggregate.hs) and in
+[rust/README.md](rust/README.md).
 
-### Effect system footnote
+The Rust port exists to price GHC's calling convention: GHC nails ten
+registers to the STG machine and spills what doesn't fit, Rust gets
+the whole register file, and that's roughly the whole 1.27 vs 1.05
+difference. We also emitted the LLVM IR and tried to hand-beat the
+compiler. We could not. Nobody has to know how long we tried.
 
-`exe-effectful` and `exe-mtl` run the same pipeline with the per-line
-loop threaded through
-[effectful](https://hackage.haskell.org/package/effectful)'s `Eff`
-monad and an idiomatic
-[mtl](https://hackage.haskell.org/package/mtl) `MonadReader` +
-`MonadIO` stack respectively: one effect bind plus a `liftIO` per row,
-a billion rows per run, everything else shared with the native
-implementation (same parser, same table, byte-identical output, same
-test suite). Measured per 100M rows: native 17.769 billion
-instructions, effectful 17.769 (zero cost, GHC inlines the `Eff`
-newtype and `liftIO` away entirely), mtl 18.451 (+3.8%). The mtl
-walker's operations are a proper capability class (`MonadStepLine`,
-no `MonadIO` in the walker, reinterpretation = another carrier type
-with another instance), and the class version measures identical to
-the digit with a plain `asks`+`liftIO` version: GHC specializes the
-dictionaries away completely, leaving only the environment-field
-reads inside the methods. Billion-row wall times for those three are
-within noise of each other on 16 threads.
+effectful is free. Genuinely, provably free: the static variant is
+instruction-identical to plain IO at two billion effect binds. Until
+you use *dynamic* dispatch on something tiny, at which point the
+`send` round trip (~148 instructions) costs more than Rust spends on
+the entire line, and your billion rows take 2.3x longer. mtl spells
+the same reinterpretable-effect idea as a typeclass and GHC
+specializes it down to +3.8%. Late binding costs exactly when you
+bind late; effectful's docs won't tell you where the line is, so
+this table is the line.
 
-So the same reinterpretable-domain-effect abstraction costs +3.8%
-under mtl's compile-time dispatch and +83% under effectful's runtime
-dispatch; what mtl charges instead is boilerplate per interpretation
-and interpreters fixed at compile time.
-
-`exe-effectful-dynamic` is the other half of the effectful story: the
-line advance is a proper dynamically-dispatched domain effect
-(`StepLineEffect`, with every IO the walker needs behind it, so the
-walker carries no `IOE` and is reinterpretable wholesale against a
-mock buffer or tracing handler). That buys the abstraction effectful
-exists for, and its price on this loop is the full retail one: the
-`send` plus handler round trip costs ~148 instructions per row, 83%
-of what the entire Haskell parse pipeline spends (178/row) and more
-than the whole algorithm costs Rust (118/row); totals 32.6 versus
-17.8 billion per 100M rows, wall 2.3x native.
-
-The summary the table earns: effectful is as fast as IO even when
-you use effects, as long as they are statically dispatched; what
-costs is dynamic dispatch specifically, and only at fine grain. Note
-that effectful's own documentation says "when in doubt, use dynamic
-dispatch as it's more flexible" and offers no granularity guidance,
-so the caveat here is this benchmark's finding, not theirs: the
-`send` round trip is a fixed ~148-instruction price that a
-forty-cycle line parse cannot absorb and an ordinary file read or
-request handler absorbs without noticing. You pay for late binding
-exactly when you bind late. An earlier measurement that suggested a 35% effectful penalty
-turned out to be benchmark ordering (the first binary in each round
-paid the page-cache warmup) plus thermal throttling, which is worth
-remembering before accusing an abstraction.
-
-### MicroHs footnote
-
-There is also a [MicroHs](https://github.com/augustss/MicroHs)
-implementation in [mhs/](mhs/), correctness-tested by the same suite
-but benchmarked on 10 million rows only: it needs 362s for those
-(byte-identical output), extrapolating to roughly ten hours for the
-billion. MicroHs compiles to combinators run by a small C evaluator
-and misses everything this challenge feeds on: no unboxed primops or
-native code generation, no threads for the fan-out, no containers
-package, and its ByteString file input decodes UTF-8 into byte cells,
-truncating non-Latin-1 station names, so the implementation is plain
-String folding into a hand-rolled tree. Speed factor versus the GHC
-implementation: about 25000x. Combinator self-optimization, it turns
-out, does not extend to register allocation.
-
-The official 1brc winners clock 1.5s on eight dedicated EPYC 7502P
-(Zen2) cores; their code remains a few percent more cycle-efficient,
-this machine's newer cores make up the difference.
-
-The design notes live as `Decision:` comments in
-[src/Aggregate.hs](src/Aggregate.hs). The short version: workers pread
-chunks of the file into reusable padded buffers (plain reads beat mmap
-here: the kernel's copy from page cache parallelizes better than its
-page faults), claiming chunks off a work-stealing counter, and per
-worker run two interleaved line cursors through a branchless SWAR
-parser (semicolon search, temperature parse and name masking all
-happen in 64-bit words) into an open-addressing hash table of unboxed
-Ints whose slots are exactly one aligned cache line. Station names are
-copied to a per-worker arena on first sight so the reused buffers can
-be overwritten freely. The hot loop allocates nothing.
+MicroHs runs the same logic, correctly, through a combinator
+evaluator, in about 362 seconds per 10 million rows. Combinator
+self-optimization, it turns out, does not extend to register
+allocation.
 
 ## Usage
-
-Enter the nix shell and build:
 
 ```
 nix-shell
 cabal build all
-```
-
-Generate a measurements file (413 official stations, fixed seed):
-
-```
 cabal run generate -- 1000000000 measurements.txt
-```
-
-Aggregate it:
-
-```
 cabal run exe -- measurements.txt
 ```
-
-`exe` defaults to `./measurements.txt` when no path is given.
 
 ## Tests
 
@@ -150,7 +72,7 @@ cabal run exe -- measurements.txt
 cabal test
 ```
 
-The suite runs every sample pair shipped with the upstream 1brc
-repository (rounding, boundaries, multi-byte UTF-8 names, the 10 000
-unique key stress case) against the real pipeline, plus a
-generator/aggregator round trip.
+Every official 1brc sample (rounding, boundaries, emoji station
+names, the 10k-key stress case) against every implementation, plus
+generator round trips. CI builds and tests all of it via
+`nix-build nix/ci.nix`.
