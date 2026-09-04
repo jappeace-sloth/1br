@@ -16,10 +16,16 @@ billion rows, file in page cache. The chip thermal-throttles after a
 few sustained seconds, so honest numbers are cold single shots with
 cooldowns in between:
 
-| implementation | best cold shot | sustained |
-|----------------|----------------|-----------|
-| Haskell (this repo) | 1.27s | 1.3s - 1.5s |
-| Rust port ([rust/](rust/)) | 1.05s | 1.1s - 1.2s |
+| implementation | per-line mechanism | instructions per 100M rows | 1B wall |
+|----------------|--------------------|----------------------------|---------|
+| Haskell native IO ([src/](src/)) | raw IO binds | 17.769B | 1.27s best cold, 1.3s - 1.5s sustained |
+| Haskell effectful | `Eff` bind + `liftIO` per row | 17.769B (+0.000%) | identical to native |
+| Haskell mtl | `ReaderT` env, `asks` + `liftIO` per row | 18.451B (+3.8%) | identical within noise |
+| Rust ([rust/](rust/)) | none (the control) | ~11.8B | 1.05s best cold |
+| Rust via hand-tuned LLVM IR | same source, llc pipeline | ~11.8B | identical to rustc -O |
+| MicroHs ([mhs/](mhs/)) | combinator interpreter | not comparable | ~10h extrapolated |
+
+All six produce byte-identical output and run the same test suite.
 
 The Rust port mirrors the algorithm constant-for-constant and passes
 the identical test suite; the ~20% gap is GHC's pinned-register
