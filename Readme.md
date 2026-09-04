@@ -49,11 +49,13 @@ you use *dynamic* dispatch on something tiny, at which point the
 the entire line, and your billion rows take 2.3x longer. mtl spells
 the same reinterpretable-effect idea as a typeclass and GHC
 specializes it down to +3.8%. Late binding costs exactly when you
-bind late. effectful's docs say "when in doubt, use dynamic dispatch"
-and never say at what operation size that stops being good advice;
-going by these measurements: somewhere well above ~148 instructions
-of real work per call, so wrap file reads and requests in dynamic
-effects freely, but not single parsed lines.
+bind late. effectful's docs say "when in doubt, use dynamic dispatch",
+which is advice about flexibility and it's good advice: swappable
+interpreters, mockable tests, code that survives change. Performance
+is simply a different axis, and this table adds the datapoint for the
+rare case where it dominates: the send round trip is ~148 instructions,
+so a file read or a request never notices it and a forty-cycle parsed
+line very much does.
 
 MicroHs runs the same logic, correctly, through a combinator
 evaluator, in about 362 seconds per 10 million rows. Combinator
