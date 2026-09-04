@@ -25,6 +25,17 @@ in
   # than two separate invocations.
   native = import ../default.nix { inherit hpkgs; };
 
+  # The Rust comparison port (rust/main.rs) built the same way a
+  # developer does: plain rustc, no crates. Building it in CI keeps the
+  # side-by-side benchmark honest as both implementations evolve.
+  rust = pkgs.runCommand "1br-rust"
+    {
+      nativeBuildInputs = [ pkgs.rustc pkgs.gcc ];
+    } ''
+    mkdir -p $out/bin
+    rustc -O --edition 2021 ${src}/rust/main.rs -o $out/bin/onebr-rust
+  '';
+
   # Enforce .hlint.yaml across app/src/test as part of CI. Treating
   # hlint as a derivation lets the same 'nix-build nix/ci.nix' run
   # locally and in GitHub Actions, and keeps the hlint version pinned
