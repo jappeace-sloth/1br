@@ -33,10 +33,11 @@ lookupExternalBinaries :: IO [(String, FilePath)]
 lookupExternalBinaries = do
   rustBinary <- lookupEnv "ONEBR_RUST_BIN"
   irBinary <- lookupEnv "ONEBR_RUST_LL_BIN"
+  mhsBinary <- lookupEnv "ONEBR_MHS_BIN"
   pure
     (concatMap
       (\(label, found) -> maybe [] (\path -> [(label, path)]) found)
-      [("rust", rustBinary), ("rust-ll", irBinary)])
+      [("rust", rustBinary), ("rust-ll", irBinary), ("mhs", mhsBinary)])
 
 tests :: [(String, FilePath)] -> TestTree
 tests externalBinaries = testGroup "1br"

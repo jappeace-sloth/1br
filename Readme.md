@@ -28,6 +28,21 @@ at identical IPC; details in [rust/README.md](rust/README.md), which
 also documents the hand-tunable LLVM IR build that established rustc's
 output already sits on the machine's floor for this source shape).
 
+### MicroHs footnote
+
+There is also a [MicroHs](https://github.com/augustss/MicroHs)
+implementation in [mhs/](mhs/), correctness-tested by the same suite
+but benchmarked on 10 million rows only: it needs 362s for those
+(byte-identical output), extrapolating to roughly ten hours for the
+billion. MicroHs compiles to combinators run by a small C evaluator
+and misses everything this challenge feeds on: no unboxed primops or
+native code generation, no threads for the fan-out, no containers
+package, and its ByteString file input decodes UTF-8 into byte cells,
+truncating non-Latin-1 station names, so the implementation is plain
+String folding into a hand-rolled tree. Speed factor versus the GHC
+implementation: about 25000x. Combinator self-optimization, it turns
+out, does not extend to register allocation.
+
 The official 1brc winners clock 1.5s on eight dedicated EPYC 7502P
 (Zen2) cores; their code remains a few percent more cycle-efficient,
 this machine's newer cores make up the difference.
