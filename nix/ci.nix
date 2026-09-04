@@ -43,6 +43,17 @@ let
     rustc -O --edition 2021 --cfg hot_extern ${src}/rust/main.rs \
       -C link-arg=hot.o -o $out/bin/onebr-rust-ll
   '';
+  # The MicroHs implementation (mhs/Main.hs): compiled to combinators
+  # run by MicroHs's small C evaluator. Only benchmarked on 10M rows
+  # (see the Readme note), but correctness-tested like the others.
+  mhsBinary = pkgs.runCommand "1br-mhs"
+    {
+      nativeBuildInputs = [ pkgs.microhs pkgs.gcc ];
+    } ''
+    mkdir -p $out/bin
+    cd ${src}/mhs
+    mhs -o$out/bin/onebr-mhs Main.hs
+  '';
 in
 {
   # The cabal build / library / executable derivation — what
@@ -56,6 +67,7 @@ in
       preCheck = ''
         export ONEBR_RUST_BIN=${rustBinary}/bin/onebr-rust
         export ONEBR_RUST_LL_BIN=${rustLlBinary}/bin/onebr-rust-ll
+        export ONEBR_MHS_BIN=${mhsBinary}/bin/onebr-mhs
       '';
     })
     (import ../default.nix { inherit hpkgs; });
@@ -63,6 +75,7 @@ in
   # The Rust comparison ports, exposed so CI archives them as outputs.
   rust = rustBinary;
   rust-ll = rustLlBinary;
+  mhs = mhsBinary;
 
   # Enforce .hlint.yaml across app/src/test as part of CI. Treating
   # hlint as a derivation lets the same 'nix-build nix/ci.nix' run
