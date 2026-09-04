@@ -28,6 +28,21 @@ at identical IPC; details in [rust/README.md](rust/README.md), which
 also documents the hand-tunable LLVM IR build that established rustc's
 output already sits on the machine's floor for this source shape).
 
+### Effectful footnote
+
+`exe-effectful` runs the same pipeline with the per-line loop threaded
+through [effectful](https://hackage.haskell.org/package/effectful)'s
+`Eff` monad: one effect-system bind plus a `liftIO` per row, a billion
+rows per run, with everything else shared with the native
+implementation (same parser, same table, byte-identical output, same
+test suite). Measured cost: none. perf counts 17.770 versus 17.769
+billion instructions per 100M rows, identical IPC, and interleaved
+billion-row wall times within noise of each other; GHC inlines the
+`Eff` newtype and `liftIO` away entirely. An earlier measurement that
+suggested a 35% penalty turned out to be benchmark ordering (the first
+binary in each round paid the page-cache warmup) plus thermal
+throttling, which is worth remembering before accusing an abstraction.
+
 ### MicroHs footnote
 
 There is also a [MicroHs](https://github.com/augustss/MicroHs)
