@@ -21,7 +21,7 @@ cooldowns in between:
 | Haskell native IO ([src/](src/)) | raw IO binds | 17.769B | 1.27s best cold, 1.3s - 1.5s sustained |
 | Haskell effectful (static) | `Eff` bind + `liftIO` per row | 17.769B (+0.000%) | identical to native |
 | Haskell effectful (dynamic) | `send` through an interpreted `StepLineEffect` per row | 32.590B (+83%) | ~3.1s (2.3x native) |
-| Haskell mtl | `ReaderT` env, `asks` + `liftIO` per row | 18.451B (+3.8%) | identical within noise |
+| Haskell mtl | class-dispatched `MonadStepLine` capability per row | 18.451B (+3.8%) | identical within noise |
 | Rust ([rust/](rust/)) | none (the control) | ~11.8B | 1.05s best cold |
 | Rust via hand-tuned LLVM IR | same source, llc pipeline | ~11.8B | identical to rustc -O |
 | MicroHs ([mhs/](mhs/)) | combinator interpreter | not comparable | ~10h extrapolated |
@@ -51,11 +51,19 @@ a billion rows per run, everything else shared with the native
 implementation (same parser, same table, byte-identical output, same
 test suite). Measured per 100M rows: native 17.769 billion
 instructions, effectful 17.769 (zero cost, GHC inlines the `Eff`
-newtype and `liftIO` away entirely), mtl 18.451 (+3.8%, about seven
-instructions per row, which is not dictionary passing but the two
-reader `asks` per line re-reading environment fields). Billion-row
-wall times for those three are within noise of each other on 16
-threads.
+newtype and `liftIO` away entirely), mtl 18.451 (+3.8%). The mtl
+walker's operations are a proper capability class (`MonadStepLine`,
+no `MonadIO` in the walker, reinterpretation = another carrier type
+with another instance), and the class version measures identical to
+the digit with a plain `asks`+`liftIO` version: GHC specializes the
+dictionaries away completely, leaving only the environment-field
+reads inside the methods. Billion-row wall times for those three are
+within noise of each other on 16 threads.
+
+So the same reinterpretable-domain-effect abstraction costs +3.8%
+under mtl's compile-time dispatch and +83% under effectful's runtime
+dispatch; what mtl charges instead is boilerplate per interpretation
+and interpreters fixed at compile time.
 
 `exe-effectful-dynamic` is the other half of the effectful story: the
 line advance is a proper dynamically-dispatched domain effect
