@@ -24,6 +24,8 @@ poor thing thermal-throttles if you run it twice):
 | Haskell, mtl capability class | 18.5B, +3.8% | same as IO |
 | Haskell, effectful (dynamic dispatch) | 32.6B, +83% | 2.3x slower |
 | Rust, the control group ([rust/](rust/)) | 11.8B | **1.05s** |
+| Haskell in GHCi, object code -O0 | n/a | ~7 min extrapolated |
+| Haskell in GHCi, true bytecode | n/a | ~2.1 hours extrapolated |
 | MicroHs ([mhs/](mhs/)) | bless its heart | ~10 hours |
 
 ## Things we learned so you don't have to
@@ -57,10 +59,22 @@ rare case where it dominates: the send round trip is ~148 instructions,
 so a file read or a request never notices it and a forty-cycle parsed
 line very much does.
 
-MicroHs runs the same logic, correctly, through a combinator
-evaluator, in about 362 seconds per 10 million rows. Combinator
-self-optimization, it turns out, does not extend to register
-allocation.
+GHCi turned out to be two rungs, and measuring them honestly took an
+adversarial reviewer: this repo's `.ghci` sets `-fobject-code -O0`,
+so a naive `cabal repl` session runs native unoptimized code (about
+4s per 10M rows, ~30x slower than -O2, output byte-identical) while
+looking like an interpreter. Actual bytecode needs
+`-ignore-dot-ghci -fbyte-code -fforce-recomp` and costs about 76s
+per 10M rows, roughly 6000x the compiled binary's steady-state
+throughput (12.7ms per 10M): every register-resident micro-op
+becomes a boxed trip through a dispatch loop. GHCi is the
+interpreter half of a JIT with the profile-and-compile half missing,
+and that 2500x is the gap the missing half would have to close. Even
+so it beats MicroHs (362s per 10M, correct throughout) by about 5x,
+since GHCi bytecode at least calls into compiled primops and
+libraries while MicroHs interprets combinators all the way down.
+Combinator self-optimization, it turns out, does not extend to
+register allocation.
 
 ## Usage
 
