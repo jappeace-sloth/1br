@@ -4,7 +4,8 @@ The same algorithm as `src/Aggregate.hs`, mirrored
 constant-for-constant, to price GHC's pinned-register calling
 convention: GHC reserves ten x86-64 general-purpose registers for the
 STG machine, rustc/LLVM allocates the full file. Identical IPC on this
-machine (3.18), but 122 instructions per line against Haskell's 178.
+machine (~3.2), but 118 instructions per line against Haskell's 178
+(122 before the pointer-cursor change described under Findings).
 
 ## Layout
 
