@@ -37,13 +37,15 @@ let
   };
 in
 (stockGhc.override {
-  # Decision: perf, THC's documented flavour, instead of nixpkgs'
-  # release. Release adds no_self_recomp, which drops the source hash
-  # and usage list from every interface, and THC's --ghc-source check
-  # verifies the configured tree against exactly that record.
+  # Decision: nixpkgs' flavour for these settings with perf (THC's) as
+  # the base instead of release, whose no_self_recomp strips the source
+  # hashes and usages THC's --ghc-source check verifies.
   ghcFlavour = "perf+no_profiled_libs+split_sections";
-  # Neither is used by THC; skipping them saves a large share of the build.
+  # Skips the Sphinx manuals (user guide, Haddock manual); library
+  # Haddocks are still built.
   enableDocs = false;
+  # The explicit flavour above already drops profiled libs; this keeps
+  # passthru (read by package sets built on this GHC) consistent.
   enableProfiledLibs = false;
   inherit hadrian;
 }).overrideAttrs (old: {
