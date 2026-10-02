@@ -1,0 +1,8 @@
+-- The 1br package as THC builds it: GHC 9.14.1 with complete Core.
+packages: .
+tests: False
+benchmarks: False
+index-state: 2026-10-02T11:04:35Z
+-- 1br.cabal caps base below 4.22; GHC 9.14.1 ships base 4.22.0.0.
+-- Scoped to 1br so dependencies keep their own base bounds.
+allow-newer: 1br:base
