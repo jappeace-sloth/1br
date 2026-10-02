@@ -86,8 +86,8 @@ compiles what runs hot. On this exact source it would finish a billion
 rows (extrapolated from 100M) about 3x sooner than GHCi given the same
 16 capabilities, and about 1800x later than native GHC. One setting
 visibly holds it back: THC caps Graal's graph-size budget at 100 000
-and the inlined parse loop needs a budget above 200 000, so the
-hottest code in the program never leaves the interpreter. Raise the cap
+and the inlined parse loop needs more than twice that, so the hottest
+code in the program never leaves the interpreter. Raise the cap
 and 10M rows drop from 39s to 21s. The toolchain, the measurements and the war stories
 (a GHC built three times, Gradle locked into nix) live in
 [thc/README.md](thc/README.md).
