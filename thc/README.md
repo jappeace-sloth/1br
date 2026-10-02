@@ -60,9 +60,11 @@ THC's launcher fixes `compiler.MaximumGraalGraphSize`, Graal's budget
 for its weighted graph-size estimate, at 100 000
 (`src/main/java/thc/Main.java`). Graal abandons the compile at the
 first node that crosses the budget, so the reported size only says
-where it stopped. Bisecting the budget on 10M rows: the chunk lambda,
-with `stepLine`/`scanValue`/`finishLine` inlined, still bails at
-200 000 and first compiles at 300 000.
+where it stopped. The chunk lambda, with `stepLine`/`scanValue`/
+`finishLine` inlined, on 10M rows: at a budget of 200 000 every attempt
+bails; at 210 000 the first attempt bails and the retry, with a smaller
+graph (41 778 initial IR nodes against 48 416), compiles; at 250 000
+and 300 000 the first attempt compiles.
 The loop therefore runs in THC's bytecode interpreter for the whole
 file. The "graph budget raised" row is a runtime built with that one
 option read from a system property instead, set to 400 000. Then the lambda compiles
