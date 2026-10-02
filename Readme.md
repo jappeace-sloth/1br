@@ -27,7 +27,7 @@ poor thing thermal-throttles if you run it twice):
 | Haskell, effectful (dynamic dispatch) | 32.6B, +83% | 2.3x slower |
 | Rust, the control group ([rust/](rust/)) | 11.8B | **1.05s** |
 | Haskell in GHCi, object code -O0 | n/a | ~7 min extrapolated |
-| Haskell on THC, GHC Core JIT-compiled by GraalVM ([thc/](thc/)) | n/a | ~39 min extrapolated |
+| Haskell on THC, GHC Core on Truffle/GraalVM ([thc/](thc/)) | n/a | ~39 min extrapolated |
 | Haskell in GHCi, true bytecode | n/a | ~2.1 hours extrapolated |
 | MicroHs ([mhs/](mhs/)) | bless its heart | ~10 hours |
 
@@ -84,11 +84,11 @@ Then Edward Kmett shipped the missing half:
 optimised Core on Truffle/GraalVM, which profiles the interpreter and
 compiles what runs hot. On this exact source it would finish a billion
 rows (extrapolated from 100M) about 3x sooner than GHCi given the same
-16 capabilities, and about 1800x later than native GHC. One number
-visibly holds it back: THC caps Graal's graph size at 100 000 nodes and
-the inlined parse loop needs a few more, so the hottest code in the
-program never leaves the interpreter. Raise the cap and 10M rows drop
-from 39s to 21s. The toolchain, the measurements and the war stories
+16 capabilities, and about 1800x later than native GHC. One setting
+visibly holds it back: THC caps Graal's graph-size budget at 100 000
+and the inlined parse loop first compiles at 300 000, so the hottest
+code in the program never leaves the interpreter. Raise the cap and
+10M rows drop from 39s to 21s. The toolchain, the measurements and the war stories
 (a GHC built three times, Gradle locked into nix) live in
 [thc/README.md](thc/README.md).
 

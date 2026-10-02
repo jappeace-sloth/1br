@@ -34,8 +34,9 @@ same launch on a 72-row file), so the extrapolation to a billion uses
 the 100M throughput plus that start-up once. GHCi rows are the `:set +s`
 time of `Aggregate.main` with `-ignore-dot-ghci -fbyte-code
 -fforce-recomp`, which excludes loading the modules. With GHC 9.12.2
-the single-capability run took 114.0 s here; the Readme's 75.8 s came
-from an earlier session on a less busy host.
+the single-capability run took 114.0 s here. The Readme's 75.8 s does
+not record its capability count, and it sits between these 1- and
+16-capability figures.
 
 At a billion rows THC would finish about 3x sooner than GHCi on equal
 cores and 5x sooner than GHCi's default single capability. At 10M rows
@@ -55,13 +56,16 @@ GraphTooBigBailoutException: Graph too big to safely compile.
   Node count: 93289. Graph Size: 100004. Limit: 100000.
 ```
 
-THC's launcher fixes `compiler.MaximumGraalGraphSize` at 100 000
-(`src/main/java/thc/Main.java`), and the parse loop with
-`stepLine`/`scanValue`/`finishLine` inlined lands a few nodes over it
-(100 001 to 100 011 across runs).
+THC's launcher fixes `compiler.MaximumGraalGraphSize`, Graal's budget
+for its weighted graph-size estimate, at 100 000
+(`src/main/java/thc/Main.java`). Graal abandons the compile at the
+first node that crosses the budget, so the reported size only says
+where it stopped. Bisecting the budget on 10M rows: the chunk lambda,
+with `stepLine`/`scanValue`/`finishLine` inlined, still bails at
+200 000 and first compiles at 300 000.
 The loop therefore runs in THC's bytecode interpreter for the whole
 file. The "graph budget raised" row is a runtime built with that one
-option read from a system property instead. Then the lambda compiles
+option read from a system property instead, set to 400 000. Then the lambda compiles
 (7.6 s of compile time, 522 KB of machine code) and 10M rows take
 20.7 s instead of 38.7 s. Its on-stack-replacement variant still fails
 code installation ("code is too large"), so a chunk already running
