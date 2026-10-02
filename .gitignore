@@ -11,3 +11,4 @@ TAGS
 .envrc
 /measurements*.txt
 /test-generated-measurements.txt
+/thc/vendor/

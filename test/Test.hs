@@ -30,16 +30,20 @@ main = do
 -- samples plus a cross-check against the Haskell aggregate of a
 -- generated file. nix/ci.nix sets them, so CI always exercises the
 -- Rust port; a bare `cabal test` without the variables runs the
--- Haskell-only suite.
+-- Haskell-only suite. ONEBR_THC_BIN is the exception CI never sets: its
+-- launcher needs a from-source GHC build (see thc/acquire.sh).
 lookupExternalBinaries :: IO [(String, FilePath)]
 lookupExternalBinaries = do
   rustBinary <- lookupEnv "ONEBR_RUST_BIN"
   irBinary <- lookupEnv "ONEBR_RUST_LL_BIN"
   mhsBinary <- lookupEnv "ONEBR_MHS_BIN"
+  thcBinary <- lookupEnv "ONEBR_THC_BIN"
   pure
     (concatMap
       (\(label, found) -> maybe [] (\path -> [(label, path)]) found)
-      [("rust", rustBinary), ("rust-ll", irBinary), ("mhs", mhsBinary)])
+      [ ("rust", rustBinary), ("rust-ll", irBinary), ("mhs", mhsBinary)
+      , ("thc", thcBinary)
+      ])
 
 tests :: [(String, FilePath)] -> TestTree
 tests externalBinaries = testGroup "1br"

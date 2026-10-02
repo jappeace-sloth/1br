@@ -1,0 +1,14 @@
+-- The 1br package as THC builds it: GHC 9.14.1 with complete Core.
+packages: .
+-- Decision: build primitive as a local package from thc/vendor (filled
+-- by thc/acquire.sh) instead of from the cabal store. THC compiles
+-- per-import C adapters for primitive's cbits in the package's source
+-- root, and for a store package that root is cabal's temporary unpack
+-- directory, already deleted by then.
+optional-packages: thc/vendor/*/*.cabal
+tests: False
+benchmarks: False
+index-state: 2026-10-02T11:04:35Z
+-- 1br.cabal caps base below 4.22; GHC 9.14.1 ships base 4.22.0.0.
+-- Scoped to 1br so dependencies keep their own base bounds.
+allow-newer: 1br:base
