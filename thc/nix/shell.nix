@@ -1,14 +1,12 @@
-# Toolchain for running 1br under THC (https://github.com/ekmett/thc).
-# The JVM runtime comes prebuilt from thc-runtime.nix as $THC_RUNTIME.
-# GHC itself is not in here: THC needs the complete-Core build from
-# ../build-ghc.sh, which run.sh puts on PATH.
+# Toolchain for running 1br under THC (https://github.com/ekmett/thc),
+# with the nix-built JVM runtime as $THC_RUNTIME. The complete-Core GHC
+# that THC needs is not in here; build it with ../build-ghc.sh.
 { sources ? import ../../npins
 , pkgs ? import sources.nixpkgs-thc { }
 ,
 }:
 let
-  # THC's CI checks every LLVM tool is major version 18; Sulong in
-  # GraalVM 25 consumes bitcode from that release.
+  # THC's CI requires major version 18 of every LLVM tool it uses.
   llvm = pkgs.llvmPackages_18;
   thcRuntime = import ./thc-runtime.nix { inherit pkgs; };
 in
@@ -22,9 +20,10 @@ pkgs.mkShell {
     llvm.llvm
     pkgs.hyperfine
   ];
-  # Package C is compiled to bitcode for Sulong; fortify and stack
-  # protector rewrite libc calls into __*_chk variants that the
-  # bitcode then has to resolve as well.
+  # The THC driver compiles the C inside Haskell packages (cbits, CAPI
+  # wrappers) to bitcode for Sulong. Keep that bitcode free of nixpkgs
+  # hardening: fortify rewrites libc calls into __*_chk variants and
+  # the stack protector adds __stack_chk_fail calls.
   hardeningDisable = [ "all" ];
   THC_RUNTIME = "${thcRuntime}/bin/thc";
 }

@@ -86,8 +86,9 @@ pkgs.stdenv.mkDerivation (finalAttrs: {
   ];
   buildInputs = [ pkgs.gmp ];
 
-  # Package C is compiled to bitcode for Sulong; fortify and stack
-  # protector rewrite libc calls into __*_chk variants.
+  # The runtime's cbits are compiled to bitcode for Sulong. Keep that
+  # bitcode free of nixpkgs hardening: fortify rewrites libc calls into
+  # __*_chk variants and the stack protector adds __stack_chk_fail calls.
   hardeningDisable = [ "all" ];
 
   mitmCache = gradle.fetchDeps {
