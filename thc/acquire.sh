@@ -51,6 +51,26 @@ if [ "$actual" != "$revision" ]; then
   exit 1
 fi
 
+# A fresh cabal has no Hackage index; fetch one only then, so an existing
+# global index-state stays put. THC pins none, but its driver later
+# rebuilds THC in the checkout with --offline, so pin the checkout
+# (cabal.project.local, git-ignored there) to this project's snapshot,
+# keeping those rebuilds on what `make haskell` downloaded.
+# cabal path prints its config-creation notes on stdout first on a fresh
+# cabal; the cache directory is the last line.
+repo_cache=$(cabal path --remote-repo-cache | tail -n 1)
+if [ ! -e "$repo_cache/hackage.haskell.org/01-index.tar" ]; then
+  cabal update
+fi
+index_state=$(sed -n 's/^index-state: *//p' "$repository/cabal.project.thc")
+pin="index-state: $index_state"
+if [ ! -e "$checkout/cabal.project.local" ]; then
+  echo "$pin" > "$checkout/cabal.project.local"
+elif ! grep -qxF "$pin" "$checkout/cabal.project.local"; then
+  echo "$checkout/cabal.project.local exists without '$pin'" >&2
+  exit 1
+fi
+
 # primitive must be a local package; see the Decision in cabal.project.thc.
 if [ ! -d "$repository/thc/vendor/primitive-0.9.1.0" ]; then
   (cd "$repository" && cabal get primitive-0.9.1.0 --destdir thc/vendor)
@@ -68,10 +88,11 @@ driver=$(cd "$checkout" && cabal list-bin exe:thc --with-compiler="$ghc")
 mkdir -p "$toolchain/bin"
 # @FILE names a Core package manifest. The entry and shutdown pair is
 # what `thc run` launches for a Cabal executable: GHC's generated main
-# wrapper, then the Handle flush.
+# wrapper, then the Handle flush. ONEBR_THC_RUNTIME swaps in another
+# runtime build, such as nix/thc-runtime-tunable.nix, for experiments.
 cat > "$toolchain/bin/onebr-thc" <<EOF
 #!/bin/sh
-exec $THC_RUNTIME --run-executable @$toolchain/thc-guest/packages.json \\
+exec \${ONEBR_THC_RUNTIME:-$THC_RUNTIME} --run-executable @$toolchain/thc-guest/packages.json \\
   main::Main.main ghc-internal:GHC.Internal.TopHandler.flushStdHandles -- exe "\$@"
 EOF
 chmod +x "$toolchain/bin/onebr-thc"

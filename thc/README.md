@@ -13,69 +13,62 @@ question is how far that half gets on the same unmodified
 ## Results
 
 Same laptop as the scoreboard (Ryzen AI 7 350, 8 cores, 16 threads),
-GHC 9.14.1 as the frontend for everything except the first row, THC at
-revision `6610dc01`. The host is shared with other containers, so the
-load average sat around 6 to 9 during these runs. Every number below
-produced byte-identical output.
+GHC 9.14.1 as the frontend for every THC row, THC at revision
+`0ae57cbf`. The native and THC rows were measured on 3 October 2026 on
+an idle host. The GHCi rows and the GHC 9.14.1 native row are from 2
+October, when other containers kept the load average around 6 to 9.
+Every number below produced byte-identical output.
 
-| implementation | 10M rows | 100M rows | 1B extrapolated |
-|----------------|----------|-----------|-----------------|
-| native -O2, GHC 9.12.2 (the repository's pin) | 0.042 s | 0.146 s | 1.27 s measured |
+| implementation | 10M rows | 100M rows | 1B rows |
+|----------------|----------|-----------|---------|
+| native -O2, GHC 9.12.2 (the repository's pin) | 0.040 s | 0.151 s | 1.32 s |
 | native -O2, GHC 9.14.1 | 0.040 s | 0.149 s | |
-| THC as published | 38.7 s | 245.6 s | ~39 min |
-| THC, graph budget raised to 400 000 | 20.7 s | 181.2 s | ~29 min |
-| GHCi bytecode, 16 capabilities | 69.8 s | | ~1.9 hours |
-| GHCi bytecode, 1 capability | 124.5 s | | ~3.5 hours |
+| THC with its defaults | 37.7 s | 243 s | ~39 min extrapolated |
+| THC, graph budget 400 000 and OSR off | 21.0 s | 39.4 s | 2.6 to 2.8 min |
+| GHCi bytecode, 16 capabilities | 69.8 s | | ~1.9 hours extrapolated |
+| GHCi bytecode, 1 capability | 124.5 s | | ~3.5 hours extrapolated |
 
-THC rows are wall time of the whole process: three hyperfine runs at
-10M, a single run at 100M. Starting the JVM and loading the Core of
-base, bytestring, containers and friends costs 10.8 s on its own (the
-same launch on a 72-row file), so the extrapolation to a billion uses
-the 100M throughput plus that start-up once. GHCi rows are the `:set +s`
-time of `Aggregate.main` with `-ignore-dot-ghci -fbyte-code
--fforce-recomp`, which excludes loading the modules. With GHC 9.12.2
-the single-capability run took 114.0 s here. The Readme's 75.8 s does
-not record its capability count, and it sits between these 1- and
-16-capability figures.
+THC rows are wall time of the whole process: the mean of three runs at
+10M and for the tuned row at 100M, one run for the default at 100M, two
+runs at a billion. Starting the JVM and loading the Core of base,
+bytestring, containers and friends costs 10.8 s on its own (the same
+launch on a 20-row file), so the default's extrapolation to a billion is
+that start-up plus ten times the rest of the 100M run. The tuned row
+needs a runtime that reads the graph budget from a system property
+([nix/thc-runtime-tunable.nix](nix/thc-runtime-tunable.nix)), because
+THC's launcher hardcodes it; turning OSR off is a plain Truffle option.
+The update from the previous pin, `6610dc01`, moved neither default
+number beyond noise (38.2 s and 235 s there); the tuned row was only
+measured on `0ae57cbf`. GHCi rows are the `:set +s` time of `Aggregate.main` with
+`-ignore-dot-ghci -fbyte-code -fforce-recomp`, which excludes loading
+the modules. With GHC 9.12.2 the single-capability run took 114.0 s
+there. The Readme's 75.8 s does not record its capability count, and it
+sits between these 1- and 16-capability figures.
 
-At a billion rows THC would finish about 3x sooner than GHCi on equal
-cores and 5x sooner than GHCi's default single capability. At 10M rows
-its start-up eats most of that and the lead over 16-capability GHCi is
-1.8x. Native GHC finishes about 1800x sooner than THC. The win is wall
-time, not efficiency: THC used 3 319 s of user CPU time on 100M rows,
-where single-capability GHCi, at 124.5 s per 10M on one core, would
-need about 1 245.
+With its defaults THC would finish a billion rows about 3x sooner than
+GHCi on equal cores; tuned, it finishes about 40x sooner, and about
+120x later than native GHC. The default's win is wall time, not
+efficiency: it used 3 196 s of user CPU time on 100M rows, where
+single-capability GHCi, at 124.5 s per 10M on one core, would need
+about 1 245. Tuned, THC used 422 s.
 
-## Why the hot loop stays interpreted
+## Why it is slow
 
-Run with `JAVA_OPTS=-Dthc.traceCompilation=true` and Graal reports this
-for the worker lambda that walks a chunk:
-
-```
-GraphTooBigBailoutException: Graph too big to safely compile.
-  Node count: 93289. Graph Size: 100004. Limit: 100000.
-```
-
-THC's launcher fixes `compiler.MaximumGraalGraphSize`, Graal's budget
-for its weighted graph-size estimate, at 100 000
-(`src/main/java/thc/Main.java`). Graal abandons the compile at the
-first node that crosses the budget, so the reported size only says
-where it stopped. The chunk lambda, with `stepLine`/`scanValue`/
-`finishLine` inlined, on 10M rows: as first built it bails at 210 000
-and compiles at 250 000 and 300 000. After a bailout THC's own graph
-recovery stops inlining the lambda's bytecode case regions and retries;
-that smaller graph (41 778 initial IR nodes against 48 416) compiles at
-210 000 but still bails at 200 000.
-The loop therefore runs in THC's bytecode interpreter for the whole
-file. The "graph budget raised" row is a runtime built with that one
-option read from a system property instead, set to 400 000. Then the lambda compiles
-(7.6 s of compile time, 522 KB of machine code) and 10M rows take
-20.7 s instead of 38.7 s. Its on-stack-replacement variant still fails
-code installation ("code is too large"), so a chunk already running
-when the compile lands cannot switch to it. At 100M the gain shrinks
-to 181 s against 246 s. I have not pinned down why; the trace shows
-some recompilation, and these were single runs on a laptop that
-throttles.
+With the defaults, the lambda that walks a chunk exceeds Graal's
+graph-size budget, which THC's launcher fixes at 100 000. THC's graph
+recovery then replaces the lambda with a version split into smaller
+call targets, and the redirect from the old version deoptimizes
+compiled code on most loop iterations: 4.2 million deoptimizations per
+10M rows, roughly half of the CPU time. A budget of 400 000 lets the
+lambda compile whole, until the failed install of its
+on-stack-replacement variant makes THC throw that compilation away again. That
+is why a raised budget alone only reached 181 s at 100M; with OSR off
+the compilation stays. What remains is start-up, an 8.4 s compile of
+the lambda, and locking on every memory read in THC's `Addr#`
+implementation, which a 17-line prototype patch cuts from a billion
+rows' 166 s to 115 s. [PERFORMANCE.md](PERFORMANCE.md) has the
+measurements, the instruments, and the candidate fixes with an estimate
+of how hard each is.
 
 ## Reproduce
 
@@ -87,6 +80,11 @@ thc/build-ghc.sh ~/thc-toolchain              # GHC 9.14.1, complete Core
 thc/acquire.sh ~/thc-toolchain ~/thc-checkout # THC driver + 1br's Core
 ~/thc-toolchain/bin/onebr-thc measurements.txt
 ONEBR_THC_BIN=~/thc-toolchain/bin/onebr-thc cabal test
+
+# the tuned configuration
+ONEBR_THC_RUNTIME=$(nix-build thc/nix/thc-runtime-tunable.nix)/bin/thc \
+JAVA_OPTS="-Dthc.tune.MaximumGraalGraphSize=400000 -Dpolyglot.engine.OSR=false" \
+  ~/thc-toolchain/bin/onebr-thc measurements.txt
 ```
 
 The test suite then runs every official sample and a generated file

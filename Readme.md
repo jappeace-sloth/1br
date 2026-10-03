@@ -26,8 +26,9 @@ poor thing thermal-throttles if you run it twice):
 | Haskell, mtl capability class | 18.5B, +3.8% | same as IO |
 | Haskell, effectful (dynamic dispatch) | 32.6B, +83% | 2.3x slower |
 | Rust, the control group ([rust/](rust/)) | 11.8B | **1.05s** |
+| Haskell on THC, GHC Core on Truffle/GraalVM, two settings changed ([thc/](thc/)) | n/a | 2.6 to 2.8 min |
 | Haskell in GHCi, object code -O0 | n/a | ~7 min extrapolated |
-| Haskell on THC, GHC Core on Truffle/GraalVM ([thc/](thc/)) | n/a | ~39 min extrapolated |
+| Haskell on THC, as published | n/a | ~39 min extrapolated |
 | Haskell in GHCi, true bytecode | n/a | ~2.1 hours extrapolated |
 | MicroHs ([mhs/](mhs/)) | bless its heart | ~10 hours |
 
@@ -82,15 +83,18 @@ register allocation.
 Then Edward Kmett shipped the missing half:
 [THC](https://comonad.com/reader/2026/turbo-haskell/) runs GHC's
 optimised Core on Truffle/GraalVM, which profiles the interpreter and
-compiles what runs hot. On this exact source it would finish a billion
-rows (extrapolated from 100M) about 3x sooner than GHCi given the same
-16 capabilities, and about 1800x later than native GHC. One setting
-visibly holds it back: THC caps Graal's graph-size budget at 100 000
-and the inlined parse loop needs more than twice that, so the hottest
-code in the program never leaves the interpreter. Raise the cap
-and 10M rows drop from 39s to 21s. The toolchain, the measurements and the war stories
-(a GHC built three times, Gradle locked into nix) live in
-[thc/README.md](thc/README.md).
+compiles what runs hot. As published it would take about 39 minutes for
+a billion rows of this exact source, 3x sooner than GHCi with the same
+16 capabilities: the inlined parse loop is too big for Graal's
+graph-size budget, and THC's fallback for oversized code deoptimizes on
+most loop iterations. Raise the budget and turn off on-stack
+replacement, which otherwise throws the big compilation away again, and
+a billion rows take 2.6 to 2.8 minutes, measured: about 40x sooner than GHCi
+and 120x later than native GHC. Locking on every memory read is the
+next wall. The toolchain and the war stories (a GHC built three times,
+Gradle locked into nix) live in [thc/README.md](thc/README.md); the
+measurements and a list of fixes with their difficulty in
+[thc/PERFORMANCE.md](thc/PERFORMANCE.md).
 
 ## Usage
 
