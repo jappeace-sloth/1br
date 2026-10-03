@@ -20,7 +20,7 @@ let
   gradle = pkgs.gradle_9;
   llvm = pkgs.llvmPackages_18;
 
-  rev = "6610dc01750ea55e3d3ab8bc97f02bff10262474";
+  rev = "0ae57cbfe6a4fde15efbc17ffb1852694307e617";
 
   # THC's git submodules, fetched without their own submodules exactly
   # as THC's CI checks them out.
@@ -59,7 +59,7 @@ pkgs.stdenv.mkDerivation (finalAttrs: {
     owner = "ekmett";
     repo = "thc";
     inherit rev;
-    sha256 = "15xvjwd32bk6cy9z7bpckqyglj47vfpj886z5q3k5i60446fvs9d";
+    sha256 = "1b82ly0bf4azb35ak8zxyr18cxk1p7svcd99d9sawxrv0jgga53w";
   };
 
   postUnpack = lib.concatStrings (lib.mapAttrsToList

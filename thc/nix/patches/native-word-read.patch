@@ -1,0 +1,39 @@
+diff --git a/src/main/java/thc/runtime/ManagedAddress.java b/src/main/java/thc/runtime/ManagedAddress.java
+index 3abcf979f..2087989f5 100644
+--- a/src/main/java/thc/runtime/ManagedAddress.java
++++ b/src/main/java/thc/runtime/ManagedAddress.java
+@@ -76,6 +76,17 @@ public final class ManagedAddress {
+     public boolean isNativeBase() { return nativeOwner != null && offset == 0; }
+     // A nullable resource preserves the original no-native-owner loan without a wrapper.
+     ManagedNativeAllocations.Owner.Borrow borrow() { return nativeOwner == null ? null : nativeOwner.borrow(); }
++    /** Plain malloc'd storage, where a word read needs only the caller's loan and a range check. */
++    boolean plainNativeWord() {
++        return nativeOwner != null && rtsFlags == null && capabilities == null && heap == null &&
++            foreign == null && compiler == null;
++    }
++    /** One native-endian load under the caller's live loan; same range check as requireRange. */
++    long readNativeWord(ManagedNativeAllocations.Owner.Borrow loan, long displacement) {
++        long start = displacedOffset(displacement), limit = nativeOwner.getSize();
++        if (start < 0 || start > limit || Long.BYTES > limit - start) throw fault("Managed Addr# range outside its backing storage");
++        return loan.segment().get(ValueLayout.JAVA_LONG_UNALIGNED, start);
++    }
+     public <T> T withNativeBorrow(Supplier<T> body) {
+         try (var loan = borrow()) { return body.get(); }
+     }
+diff --git a/src/main/java/thc/runtime/ManagedAddressRead.java b/src/main/java/thc/runtime/ManagedAddressRead.java
+index cb52b172c..ef4fceb16 100644
+--- a/src/main/java/thc/runtime/ManagedAddressRead.java
++++ b/src/main/java/thc/runtime/ManagedAddressRead.java
+@@ -57,6 +57,12 @@ public enum ManagedAddressRead {
+         var loan = address.borrow();
+         Throwable failure = null;
+         try {
++            if (loan != null && width == Long.BYTES && address.plainNativeWord()) {
++                int stride = byteOffset ? 1 : width;
++                if (elementOffset < Long.MIN_VALUE / stride || elementOffset > Long.MAX_VALUE / stride)
++                    throw fault("Managed Addr# element offset overflow");
++                return address.readNativeWord(loan, elementOffset * stride);
++            }
+             return readBorrowed(address, elementOffset, byteOffset);
+         } catch (Throwable error) {
+             failure = error;
