@@ -17,7 +17,8 @@ implementation is never enough when you have questions.
 
 Seven implementations, byte-identical output, one shared test suite.
 Numbers from an 8-core Ryzen AI 7 350 (cold single shots, because the
-poor thing thermal-throttles if you run it twice):
+poor thing thermal-throttles if you run it twice; the measured THC rows
+give the range over two or three runs):
 
 | implementation | instructions per 100M rows | 1B wall |
 |----------------|----------------------------|---------|
@@ -26,7 +27,7 @@ poor thing thermal-throttles if you run it twice):
 | Haskell, mtl capability class | 18.5B, +3.8% | same as IO |
 | Haskell, effectful (dynamic dispatch) | 32.6B, +83% | 2.3x slower |
 | Rust, the control group ([rust/](rust/)) | 11.8B | **1.05s** |
-| Haskell on THC, two settings changed plus a prototype read patch ([thc/](thc/)) | n/a | 1.9 min |
+| Haskell on THC, two settings changed plus a prototype read patch ([thc/](thc/)) | n/a | 1.8 to 1.9 min |
 | Haskell on THC, two settings changed | n/a | 2.6 to 2.8 min |
 | Haskell in GHCi, object code -O0 | n/a | ~7 min extrapolated |
 | Haskell on THC, as published | n/a | ~39 min extrapolated |
@@ -95,7 +96,7 @@ compilation away again, and a billion rows take 2.6 to 2.8 minutes,
 measured: about 40x sooner than GHCi. The next wall is locking: every
 8-byte read from the chunk buffer takes 19 read locks inside THC. A
 17-line prototype patch that brings that to 2 runs the billion rows in
-1.9 minutes, still about 90x later than native GHC. The toolchain and
+1.8 to 1.9 minutes, still about 85x later than native GHC. The toolchain and
 the war stories (a GHC built three times, Gradle locked into nix) live
 in [thc/README.md](thc/README.md); the measurements and a list of fixes
 with their difficulty in [thc/PERFORMANCE.md](thc/PERFORMANCE.md).
